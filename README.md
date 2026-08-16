@@ -1,13 +1,38 @@
 # DSH-AutoLab
 
-DeepSeek Harness (DSH) 的 AutoLab 自动化研究插件组合仓库。
+**把人工科研流程变成受控的自治实验：人类冻结目标，机器跑完整科研循环。**
 
-一个仓库、两个插件：
+## AutoLab 是什么
+
+AutoLab 是运行在 DeepSeek Harness (DSH) 之上的**自治研究控制器**。它不替代研究者的判断，而是把判断放进一条**可审计、可复现、可断点续跑**的机器流水线里：
+
+**① 契约先行 —— 一切以冻结的 Lab 规范为唯一权威。**
+`LAB_SPEC` + `lab.yaml` 把研究目标、协议、参数预算、GPU 拓扑一次性写成 SHA-256 锚定的不可变契约；此后每一步活动——方法设计、代码实现、实验执行、结果裁决——都以该契约为唯一对照物。**Preflight 在实现前裁决"方法是否合法可行"，Postflight 在实验后裁决"结果是否可信"**，跑偏即退回。
+
+**② 五角色协奏 —— 每一步都有独立的执行者与见证者。**
+- **Method** 设计研究方法与修订方案；
+- **Preflight Judge** 在实现前裁决方法（协议层闸门）；
+- **Coder** 实现并冻结候选代码（candidate）；
+- **Ops** 提供环境与执行的机械保障；
+- **Postflight Judge** 在实验后裁决结果（科学层闸门）。
+
+五个角色各有独立会话与工具面，跨 lane 通信在协议层隔离——**没有人能既当运动员又当裁判**。
+
+**③ 三级记账 —— 逻辑、种子、进程严格分层。**
+`Trial`（一次逻辑实验）× `RunSlot`（一个随机种子）× `Attempt`（一次进程执行）。机器故障（重试与血统）与科学结论（Postflight 裁决）分开记账，每一次重试都在不可变血统中留痕。
+
+**④ Controller Goal 驱动 —— 无轮询的自治节拍。**
+Controller 以单个原生 Goal 挂起，Runtime 在确切的持久事件（评审判定、候选冻结、实验终止）上唤醒它继续编排——**空闲即静默，事件即行动**。
+
+**⑤ 机械确定性 —— 收据即真相。**
+从 Method Ticket、Preflight Verdict、Coder 提交、Attempt 状态到 Postflight 结果，全部以 SHA-256 收据 + canonical JSON 冻结；重放幂等、历史不可变。这份"确定性优先"的纪律，同时也是 97% 前缀缓存命中率的来源。
+
+## 仓库组成
 
 | 目录 | 包名 | 作用 |
 |---|---|---|
-| [`dsh-autolab/`](./dsh-autolab) | `dsh-autolab` | AutoLab 自治研究控制器：Lab 规范冻结、Method/Preflight/Coder/Postflight/Ops 五角色协奏、Trial/RunSlot/Attempt 全生命周期记账、Controller Goal 驱动 |
-| [`dsh-local-session-messaging/`](./dsh-local-session-messaging) | `dsh-local-session-messaging` | DSH 本地会话间通信层：控制器与角色会话之间的 control/ack 消息、会话写入者租约（writer lease）与持久化围栏 |
+| [`dsh-autolab/`](./dsh-autolab) | `dsh-autolab` | AutoLab 自治研究控制器（上文五条核心机制的实现） |
+| [`dsh-local-session-messaging/`](./dsh-local-session-messaging) | `dsh-local-session-messaging` | DSH 本地会话间通信层：control/ack 消息、会话写入者租约（writer lease）与持久化围栏——五角色协奏的通信底座 |
 
 ## 特点与优势：沿袭 DSH 极致内核
 
