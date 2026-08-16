@@ -1,0 +1,11 @@
+- insert:
+    - id: autolab-runtime
+      name: dsh-autolab
+      config:
+        root: !!js dshHomePath('autolab')
+
+    - id: autolab-command
+      name: dsh-autolab/command
+
+    - id: tool-autolab-submission
+      name: dsh-autolab/tool

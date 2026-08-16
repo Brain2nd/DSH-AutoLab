@@ -1,0 +1,42 @@
+/**
+ * Programmatic AutoLab core surface.
+ *
+ * The Cordis plugin entry remains the package root.  This subpath exposes the
+ * deterministic state, artifact, ownership, and local Goal primitives without
+ * registering commands or starting another runtime.
+ */
+export * from './artifacts.js'
+export * from './attempt-artifacts.js'
+export * from './attempt-runtime.js'
+export * from './attempt-launch.js'
+export * from './approved-coder-artifacts.js'
+export * from './approved-coder-activation.js'
+export * from './activation-artifacts.js'
+export * from './binding.js'
+export * from './candidate.js'
+export * from './candidate-recovery.js'
+export * from './coder-receipt.js'
+export * from './coder-submission.js'
+export * from './communication.js'
+export * from './config.js'
+export * from './goal.js'
+export * from './lock.js'
+export * from './local-attempt-reconcile.js'
+export * from './manifest.js'
+export * from './method-ticket.js'
+export * from './packet.js'
+export * from './postflight-artifacts.js'
+export * from './postflight-result.js'
+export * from './preflight-verdict.js'
+export * from './review.js'
+export * from './review-artifacts.js'
+export * from './role-assignment.js'
+export * from './role-session.js'
+export * from './roles.js'
+export * from './run-checkout.js'
+export * from './runner.js'
+export * from './session-durability.js'
+export * from './state.js'
+export * from './trial.js'
+export * from './trial-artifacts.js'
+export * from './worktree.js'

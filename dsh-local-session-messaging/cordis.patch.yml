@@ -1,0 +1,14 @@
+- insert:
+    - id: local-session-messaging-provider
+      name: dsh-local-session-messaging/local
+      config:
+        root: !!js dshHomePath('local-session-messaging')
+
+    - id: tool-local-session-messaging
+      name: dsh-local-session-messaging/tool
+
+    - id: command-local-session-messaging
+      name: dsh-local-session-messaging/command
+
+    - id: prompt-local-session-messaging
+      name: dsh-local-session-messaging/prompt
