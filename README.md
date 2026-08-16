@@ -28,8 +28,8 @@ DeepSeek Harness (DSH) 的 AutoLab 自动化研究插件组合仓库。
 // ~/.dsh/profiles/web/package.json
 {
   "dependencies": {
-    "dsh-autolab": "link:/path/to/dsh-autolab-plugins/dsh-autolab",
-    "dsh-local-session-messaging": "link:/path/to/dsh-autolab-plugins/dsh-local-session-messaging"
+    "dsh-autolab": "link:/path/to/DSH-AutoLab/dsh-autolab",
+    "dsh-local-session-messaging": "link:/path/to/DSH-AutoLab/dsh-local-session-messaging"
   }
 }
 ```
