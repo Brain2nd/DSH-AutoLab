@@ -1,4 +1,4 @@
-# dsh-autolab-plugins
+# DSH-AutoLab
 
 DeepSeek Harness (DSH) 的 AutoLab 自动化研究插件组合仓库。
 
