@@ -16,6 +16,9 @@ DeepSeek Harness (DSH) 的 AutoLab 自动化研究插件组合仓库。
 本仓库相对上游的本地增强：
 
 - **candidate-supersede（候选封存/退役）**：Preflight APPROVED 新修订可以替换同 lane 既有候选，旧候选移入 `retiredCandidates` 并保持 Trial 血统可校验（见 `dsh-autolab/src/state.ts` 与 `tests/candidate-supersede.test.ts`）。
+- **Lab fact set 登记机制（fact-registry）**：加性、不可变、canonical-JSON 的用户决策登记——用户对冻结 LAB_SPEC 的修订/裁决落点为 `authority_paths.fact_set`，后续编译的每个 Role Packet 锚定当前 fact set 字节，历史包保持历史锚定并可复现（见 `dsh-autolab/src/fact-registry.ts`，贯通 role-assignment / review / coder-fix / postflight 全链路）。
+
+构建产物 `lib/` 与当前源码一致（本仓库提交前已用 `pnpm build` 重新生成）；验证状态：dsh-autolab `typecheck ✓ · 492/492 tests ✓`，dsh-local-session-messaging `typecheck ✓ · 94/94 tests ✓`。
 
 ## 安装到 DSH profile
 

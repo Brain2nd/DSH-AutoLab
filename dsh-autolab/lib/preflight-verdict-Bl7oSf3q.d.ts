@@ -2238,8 +2238,8 @@ declare const rolePacketSchema: z.ZodObject<{
     lane_id: z.ZodNullable<z.ZodString>;
     role_id: z.ZodString;
     role_kind: z.ZodEnum<{
-      method: "method";
       coder: "coder";
+      method: "method";
       preflight_judge: "preflight_judge";
       postflight_judge: "postflight_judge";
       ops: "ops";
