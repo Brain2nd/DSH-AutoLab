@@ -166,6 +166,22 @@ export interface ControllerRegisterUserDirectiveResult {
   readonly runtimeRevision: number
 }
 
+export interface ControllerCommitConfigRevisionInput {
+  readonly labId: string
+  /** Complete replacement LAB_SPEC.md text for the new revision. */
+  readonly specText: string
+  /** Complete replacement lab.yaml text for the new revision. */
+  readonly configText: string
+}
+
+export interface ControllerCommitConfigRevisionResult {
+  readonly labId: string
+  readonly revision: number
+  readonly specHash: string
+  readonly configHash: string
+  readonly manifestHash: string
+}
+
 export interface ControllerRevealResult {
   readonly labId: string
   readonly revealState: 'revealed'
@@ -228,6 +244,11 @@ export interface ControllerSurfaceRuntime {
     input: ControllerRegisterUserDirectiveInput,
     signal?: AbortSignal,
   ): Promise<ControllerRegisterUserDirectiveResult>
+  commitConfigRevision(
+    caller: Agent,
+    input: ControllerCommitConfigRevisionInput,
+    signal?: AbortSignal,
+  ): Promise<ControllerCommitConfigRevisionResult>
   reveal(
     caller: Agent,
     labId: string,
@@ -534,6 +555,45 @@ export function installControllerSurface(
       async execute(args, exec) {
         requireInstalledCaller(agent, exec.agent, 'AutoLabRegisterUserDirective')
         return await runtime.registerUserDirective(agent, args, exec.signal)
+      },
+    })))
+
+    disposers.push(agent.ctx.tools.register(defineTool({
+      name: 'AutoLabCommitConfigRevision',
+      description: 'Commit one Controller-authored configuration revision (revision N+1) on a running/paused Lab: writes revisions/NNNNNN with the complete new LAB_SPEC.md and lab.yaml, recomputes the resolved manifest, and atomically advances CURRENT. Research content (objective, families, scientific rules, contract, lane charters, evidence contract) may change; the Lab topology (roles, lanes, worktrees, repository, execution, hosts, GPU pool, communication, runner adapter) must remain byte-identical. Historical revisions and all packets/Attempts stay valid.',
+      parameters: {
+        ...labIdParameter,
+        specText: {
+          type: 'string',
+          required: true,
+          description: 'Complete replacement LAB_SPEC.md text for the new revision.',
+        },
+        configText: {
+          type: 'string',
+          required: true,
+          description: 'Complete replacement lab.yaml text for the new revision (topology fields must stay identical to the current revision).',
+        },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            labId: { type: 'string', required: true },
+            revision: { type: 'number', required: true },
+            specHash: { type: 'string', required: true },
+            configHash: { type: 'string', required: true },
+            manifestHash: { type: 'string', required: true },
+          },
+        },
+        render: (_args, value) => [{
+          type: 'text',
+          text: `AutoLab ${value.labId} committed configuration revision ${value.revision} (spec ${value.specHash.slice(0, 8)}…, config ${value.configHash.slice(0, 8)}…, manifest ${value.manifestHash.slice(0, 8)}…)`,
+        }],
+      },
+      async execute(args, exec) {
+        requireInstalledCaller(agent, exec.agent, 'AutoLabCommitConfigRevision')
+        return await runtime.commitConfigRevision(agent, args, exec.signal)
       },
     })))
 

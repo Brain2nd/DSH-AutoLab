@@ -65,12 +65,27 @@ Controller 以单个原生 Goal 挂起，Runtime 在确切的持久事件（评�
 
 两个插件均派生自 [deepseek-ai/deepseek](https://github.com/deepseek-ai/deepseek)（DeepSeek Harness 官方仓库，MIT License）内的同名包，保留原始 LICENSE 与包元数据。
 
-本仓库相对上游的本地增强：
+## 更新记录（Changelog）
 
-- **candidate-supersede（候选封存/退役）**：Preflight APPROVED 新修订可以替换同 lane 既有候选，旧候选移入 `retiredCandidates` 并保持 Trial 血统可校验（见 `dsh-autolab/src/state.ts` 与 `tests/candidate-supersede.test.ts`）。
-- **Lab fact set 登记机制（fact-registry）**：加性、不可变、canonical-JSON 的用户决策登记——用户对冻结 LAB_SPEC 的修订/裁决落点为 `authority_paths.fact_set`，后续编译的每个 Role Packet 锚定当前 fact set 字节，历史包保持历史锚定并可复现（见 `dsh-autolab/src/fact-registry.ts`，贯通 role-assignment / review / coder-fix / postflight 全链路）。
+相对上游（[deepseek-ai/deepseek](https://github.com/deepseek-ai/deepseek) 内同名包）的本地增强，按时间倒序：
 
-构建产物 `lib/` 与当前源码一致（本仓库提交前已用 `pnpm build` 重新生成）；验证状态：dsh-autolab `typecheck ✓ · 492/492 tests ✓`，dsh-local-session-messaging `typecheck ✓ · 94/94 tests ✓`。
+### 2026-08-17 · 配置修订演进 + 多修订验证 + 启动竞态修复
+
+- **配置修订演进（新能力）**：新增 Controller 工具 `AutoLabCommitConfigRevision` —— 实验中途可提交 revision N+1（完整替换 LAB_SPEC.md + lab.yaml，原子推进 CURRENT）。研究内容（目标/家族/科学规则/契约/lane charter/证据契约）可变更；拓扑（角色/lane/worktree/仓库/执行/主机/GPU 池/通信 ACL/runner）必须逐字节不变（`assertRevisionTopologyUnchanged` 强制）。配套：`freezeConfigRevision`、`readRevisionAtPath`、`listCommittedManifestHashes`、`isCommittedManifestHash`、lane charter 权威文件同步。
+- **多修订验证**：Packet/Binding/Receipt/Trial 全部改为对照工件自身 `source_revision` 的冻结文本验证（不再只认 CURRENT）；漂移判定由 `!==` 放宽为 `>`；binding 与通信 ACL 接受任何已提交修订的 manifestHash——历史修订在 CURRENT 前进后永久有效。
+- **启动竞态修复**：`installSubmissionTools()` 使 Runtime 在自身 Service.init 顶部注册五个角色提交工具（先于任何 Lab 恢复与角色激活），修复重启时角色激活早于工具注册导致的 `TOOL_SCOPE_MISMATCH`；bundle 条目 `apply()` 降级为幂等空操作。
+- **窄迁移容忍**：早期构建冻结的过期 universal 块包（无评审血统）在激活时被精确容忍、只允许被下一次 Assignment 取代；新包一律携带 CURRENT 修订逐字块。
+- **杂项**：Postflight 匹配放宽为校验评审自身冻结的 Judge Packet 哈希；Controller wait 不再比对 objective 哈希（objective 每轮含进度块、哈希不稳定）。
+
+### 2026-08-16 · Lab fact set 登记机制（fact-registry）
+
+加性、不可变、canonical-JSON 的用户决策登记——用户对冻结 LAB_SPEC 的修订/裁决落点为 `authority_paths.fact_set`，后续编译的每个 Role Packet 锚定当前 fact set 字节，历史包保持历史锚定并可复现（见 `dsh-autolab/src/fact-registry.ts`，贯通 role-assignment / review / coder-fix / postflight 全链路）。
+
+### 2026-08-16 · candidate-supersede（候选封存/退役）
+
+Preflight APPROVED 新修订可以替换同 lane 既有候选，旧候选移入 `retiredCandidates` 并保持 Trial 血统可校验（见 `dsh-autolab/src/state.ts` 与 `tests/candidate-supersede.test.ts`）。
+
+构建产物 `lib/` 与当前源码一致（本仓库提交前已用 `pnpm build` 重新生成）；验证状态：dsh-autolab `typecheck ✓ · 494/494 tests ✓`，dsh-local-session-messaging `typecheck ✓ · 94/94 tests ✓`。
 
 ## 安装到 DSH profile
 

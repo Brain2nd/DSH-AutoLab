@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises'
 import { isAbsolute, join, resolve } from 'node:path'
 
 import {
+  ActivationArtifactError,
   restoreCurrentRoleArtifacts,
   type FrozenPacketReference,
   type InitialRoleArtifacts,
@@ -20,7 +21,7 @@ import {
   type CompiledRolePacket,
   type RolePacket,
 } from './packet.js'
-import type { RootRoleBinding } from './roles.js'
+import { rolePromptFor, type RootRoleBinding } from './roles.js'
 
 const SHA256_PATTERN = /^[0-9a-f]{64}$/u
 const UTF8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
@@ -184,15 +185,30 @@ async function freezeControllerAssignment(
   flavor: ControllerAssignmentFlavor,
 ): Promise<FrozenRoleAssignment> {
   await assertStoredBinding(input)
-  const current = await restoreCurrentRoleArtifacts({
-    frozen: input.frozen,
-    role: input.role,
-    sessionId: input.sessionId,
-    binding: input.binding,
-    runtimeRevision: input.runtimeRevision,
-    packetRef: input.currentPacket,
-  })
-  if (input.runtimeRevision < current.packet.packet.anchors.runtime_revision) {
+  let current: InitialRoleArtifacts | undefined
+  try {
+    current = await restoreCurrentRoleArtifacts({
+      frozen: input.frozen,
+      role: input.role,
+      sessionId: input.sessionId,
+      binding: input.binding,
+      runtimeRevision: input.runtimeRevision,
+      packetRef: input.currentPacket,
+    })
+  } catch (error) {
+    // Known plugin-bug corruption: a Packet compiled by an earlier build
+    // carried a stale universal LAB_SPEC block, so it can never pass its
+    // own-revision verification. Such a Packet is only ever superseded by a
+    // fresh Assignment, never repaired; when it carries no review lineage the
+    // new Packet may be compiled without incumbent snapshot continuity.
+    if (!(error instanceof ActivationArtifactError)
+      || error.message !== 'Role Packet does not carry its own exact LAB_SPEC block') {
+      throw error
+    }
+    current = undefined
+  }
+  if (current !== undefined
+    && input.runtimeRevision < current.packet.packet.anchors.runtime_revision) {
     throw new RoleAssignmentError(
       'new Assignment runtime revision precedes the current Role Packet',
       'INVALID_INPUT',
@@ -202,6 +218,49 @@ async function freezeControllerAssignment(
   const manifest = input.frozen.manifest
   const roleKey = sha256(input.role.role_id)
   const assignmentKey = sha256(input.assignmentId)
+  // A new Packet must carry the CURRENT revision's verbatim universal, role,
+  // and lane blocks. The incumbent Packet may predate a config revision whose
+  // LAB_SPEC or lane charter bytes changed, so its blocks are never reused.
+  const prompt = rolePromptFor(input.role.role_kind)
+  const promptPath = join(
+    manifest.authority_paths.lab_dir,
+    'artifacts',
+    'builtins',
+    `${prompt.sha256}.txt`,
+  )
+  await freezeNoClobber(promptPath, prompt.text, 'ARTIFACT_CONFLICT')
+  const laneId = 'lane_id' in input.role ? input.role.lane_id : undefined
+  const lane = laneId === undefined
+    ? undefined
+    : manifest.search.lane_charters.find(charter => charter.lane_id === laneId)
+  let laneBlock: {
+    readonly block_id: 'lane-charter'
+    readonly source_path: string
+    readonly exact_text: string
+    readonly text_sha256: string
+  } | undefined
+  if (lane !== undefined) {
+    const laneText = canonicalJson(lane.content)
+    if (sha256(laneText) !== lane.charter_sha256) {
+      throw new RoleAssignmentError(
+        `LaneCharter bytes do not match CURRENT ResolvedManifest for ${input.role.role_id}`,
+        'ARTIFACT_CONFLICT',
+      )
+    }
+    const lanePath = join(
+      manifest.authority_paths.lab_dir,
+      'artifacts',
+      'lanes',
+      `${sha256(lane.lane_id)}.charter.json`,
+    )
+    await freezeNoClobber(lanePath, laneText, 'ARTIFACT_CONFLICT')
+    laneBlock = {
+      block_id: 'lane-charter',
+      source_path: lanePath,
+      exact_text: laneText,
+      text_sha256: lane.charter_sha256,
+    }
+  }
   const assignmentPath = join(
     manifest.authority_paths.assignment_root,
     'roles',
@@ -248,15 +307,32 @@ async function freezeControllerAssignment(
       role_binding_receipt_sha256: input.binding.hash,
       runtime_revision: input.runtimeRevision,
       fact_set_sha256: factAnchor.factSetSha256,
-      evidence_index_sha256: current.packet.packet.anchors.evidence_index_sha256,
+      evidence_index_sha256: current === undefined
+        ? sha256(await readRequiredText(
+            manifest.authority_paths.evidence_index,
+            'Evidence index',
+          ))
+        : current.packet.packet.anchors.evidence_index_sha256,
       assignment_contract_sha256: assignmentHash,
       reveal_state: input.currentRevealState
-        ?? current.packet.packet.runtime_snapshot.reveal_state,
+        ?? (current === undefined
+          ? manifest.communication.reveal_policy.initial_state
+          : current.packet.packet.runtime_snapshot.reveal_state),
       verbatim_blocks: {
-        universal: current.packet.packet.verbatim_blocks.universal,
-        role: current.packet.packet.verbatim_blocks.role,
-        lane: current.packet.packet.verbatim_blocks.lane,
-        stage: current.packet.packet.verbatim_blocks.stage,
+        universal: [{
+          block_id: 'lab-spec',
+          source_path: manifest.authority_paths.lab_spec,
+          exact_text: input.frozen.spec,
+          text_sha256: input.frozen.ref.specHash,
+        }],
+        role: [{
+          block_id: 'role-prompt',
+          source_path: promptPath,
+          exact_text: prompt.text,
+          text_sha256: prompt.sha256,
+        }],
+        lane: laneBlock === undefined ? [] : [laneBlock],
+        stage: current === undefined ? [] : current.packet.packet.verbatim_blocks.stage,
         assignment: [{
           block_id: flavor.blockId,
           source_path: assignmentPath,
@@ -264,15 +340,22 @@ async function freezeControllerAssignment(
           text_sha256: assignmentHash,
         }],
       },
-      ...(current.packet.packet.runtime_snapshot.incumbent === undefined
+      ...(current === undefined
+        || current.packet.packet.runtime_snapshot.incumbent === undefined
         ? {}
         : { incumbent: current.packet.packet.runtime_snapshot.incumbent }),
       relevant_fact_refs: [
-        ...current.packet.packet.runtime_snapshot.relevant_fact_refs.filter(ref => ref.id !== 'fact-set'),
+        ...(current === undefined
+          ? []
+          : current.packet.packet.runtime_snapshot.relevant_fact_refs.filter(ref => ref.id !== 'fact-set')),
         ...factAnchor.relevantFactRefs,
       ],
-      evidence_refs: current.packet.packet.runtime_snapshot.evidence_refs,
-      open_obligation_refs: current.packet.packet.runtime_snapshot.open_obligation_refs,
+      evidence_refs: current === undefined
+        ? []
+        : current.packet.packet.runtime_snapshot.evidence_refs,
+      open_obligation_refs: current === undefined
+        ? []
+        : current.packet.packet.runtime_snapshot.open_obligation_refs,
       input_artifact_refs: input.inputArtifactRefs.map(reference => ({ ...reference })),
       output_contract: outputContract,
     })
@@ -674,6 +757,26 @@ async function readPacket(path: string): Promise<Buffer> {
 async function freezeText(path: string, text: string): Promise<string> {
   await freezeNoClobber(path, text, 'ARTIFACT_CONFLICT')
   return sha256(text)
+}
+
+async function readRequiredText(path: string, label: string): Promise<string> {
+  let bytes: Buffer
+  try {
+    bytes = await readFile(path)
+  } catch (error) {
+    throw new RoleAssignmentError(
+      `${label} cannot be read at ${path}: ${errorMessage(error)}`,
+      'PACKET_READ_FAILED',
+    )
+  }
+  try {
+    return UTF8.decode(bytes)
+  } catch (error) {
+    throw new RoleAssignmentError(
+      `${label} at ${path} is not UTF-8: ${errorMessage(error)}`,
+      'PACKET_READ_FAILED',
+    )
+  }
 }
 
 async function freezeBytes(path: string, bytes: Buffer): Promise<void> {

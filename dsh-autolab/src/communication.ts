@@ -95,6 +95,11 @@ export interface ReconcileCommunicationAclInput {
    * Lab pair edges are then reconciled from the live worker endpoint.
    */
   readonly controllerOffline?: boolean
+  /**
+   * Committed revision manifest hashes that also authorize frozen role
+   * bindings when CURRENT has advanced past the revision they were bound to.
+   */
+  readonly authorizedManifestHashes?: ReadonlySet<string>
   readonly signal?: AbortSignal
 }
 
@@ -126,6 +131,7 @@ export function compileCommunicationAcl(input: {
   readonly revealState: AutoLabRevealState
   readonly roleSessions: readonly CommunicationRoleSession[]
   readonly allowPartial?: boolean
+  readonly authorizedManifestHashes?: ReadonlySet<string>
 }): CommunicationAclPlan {
   const manifest = parseResolvedManifest(input.manifest)
   const manifestHash = hashResolvedManifest(manifest)
@@ -134,6 +140,7 @@ export function compileCommunicationAcl(input: {
     manifestHash,
     input.roleSessions,
     input.allowPartial === true,
+    input.authorizedManifestHashes,
   )
   const permissions = new Map(
     manifest.communication.role_permissions.map(permission => [permission.role_id, permission]),
@@ -194,7 +201,15 @@ export async function reconcileCommunicationAcl(
   input: ReconcileCommunicationAclInput,
 ): Promise<CommunicationAclReconcileResult> {
   input.signal?.throwIfAborted()
-  const plan = compileCommunicationAcl(input)
+  const plan = compileCommunicationAcl({
+    manifest: input.manifest,
+    revealState: input.revealState,
+    roleSessions: input.roleSessions,
+    ...(input.allowPartial === true ? { allowPartial: true } : {}),
+    ...(input.authorizedManifestHashes === undefined
+      ? {}
+      : { authorizedManifestHashes: input.authorizedManifestHashes }),
+  })
   const quarantine = indexQuarantineSessions(input, plan)
   const managedRoles = input.controllerOffline === true
     ? plan.roles.filter(role => role.roleKind !== 'controller')
@@ -377,6 +392,7 @@ function indexRoleSessions(
   manifestHash: string,
   values: readonly CommunicationRoleSession[],
   allowPartial: boolean,
+  authorizedManifestHashes?: ReadonlySet<string>,
 ): Map<string, CommunicationRoleSession> {
   const sessions = new Map<string, CommunicationRoleSession>()
   const sessionOwners = new Map<string, string>()
@@ -420,9 +436,13 @@ function indexRoleSessions(
       throw bindingMismatch(`role ${JSON.stringify(role.role_id)} has no frozen RoleBindingReceipt`)
     }
     const receipt = binding.receipt
+    // A binding frozen under any committed revision (topology is byte-identical
+    // across revisions) keeps authorizing the same role-to-Session identity.
+    const manifestHashAuthorized = receipt.manifestHash === manifestHash
+      || authorizedManifestHashes?.has(receipt.manifestHash) === true
     if (binding.hash !== receipt.receiptHash
       || receipt.labId !== manifest.lab_id
-      || receipt.manifestHash !== manifestHash
+      || !manifestHashAuthorized
       || receipt.roleId !== role.role_id
       || receipt.roleKind !== role.role_kind
       || receipt.sessionId !== sessionId) {

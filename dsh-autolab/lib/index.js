@@ -1,4 +1,5 @@
-import { $ as stageApprovedCoderActivation, At as freezePreflightVerdict, B as WorktreeError, D as parseDraftLabYaml, Dr as validateLabId, Er as transitionRuntimeState, Et as resolveRootRoleSessionSpec, G as freezeInitialRoleArtifacts, Gn as generateLabId, H as provisionLaneWorktree, Hn as ArtifactError, It as freezeMethodDesignTicket, J as applyApprovedCoderGoal, Jt as CoderReceiptError, K as restoreCurrentRoleArtifacts, Kt as currentFactAnchor, M as CoderSubmissionError, N as freezeApprovedCoderSubmission, O as resolveDraftLabConfig, Ot as rolePromptFor, P as CandidateSnapshotError, Q as resolveApprovedCoderReview, S as acquireRuntimeLock, U as resolveRepositoryRefs, Un as ArtifactStore, Vn as resolveLocalAttemptWrapperPath, Vt as compileRolePacket, W as ActivationArtifactError, Wn as durableWriteFile, X as freezeApprovedCoderActivation, Y as compileApprovedCoderActivation, Z as installApprovedCoderGoal, Zt as coderImplementationReportOutputSchema, _t as observeOpenAgentTurn, a as resumeRootRoleSession, ar as adoptRuntimeOwner, at as compileReviewResolution, b as freezePostflightReviewArtifacts, bn as AttemptRuntimeConsumer, cn as readRoleBinding, ct as registerReviewControlHandlers, d as assertRoleAssignmentReplay, dn as prepareRetryLocalAttempt, ei as DurableApiRecoveryStore, et as REVIEW_ACCEPTED_PAUSE, f as freezeMethodAssignment, fn as verifyRetryLocalAttemptReplay, ft as sendReviewRequest, g as freezePreflightReviewArtifacts, gr as reviewFreezeComplete, gt as installLocalGoal, ht as compileLocalGoalIntent, i as createRootRoleSession, it as compileReviewControlCapability, j as reconcileCommunicationAcl, k as CommunicationAclError, l as assertMethodAssignmentReplay, lr as createRuntimeState, m as freezeRoleAssignmentReceipt, mt as acquireLocalReviewHold, n as flushSessionDurably, ni as sha256, o as verifyBorrowedRootRoleSession, or as autolabDomainSpec, p as freezeRoleAssignment, pr as recordReviewResolution, pt as LocalGoalError, qt as registerFact, sn as freezeRoleBinding, t as SessionDurabilityError, ti as canonicalJson$1, u as assertRoleAssignmentMayDispatch, un as prepareInitialLocalAttempt, ut as reviewJudgeStart, v as freezePostflightResult, wr as roleStateSchema, yt as pauseLocalGoalContinuation } from "./session-durability-Cx7syzav.js";
+import { $ as stageApprovedCoderActivation, Ar as validateLabId, At as freezePreflightVerdict, B as WorktreeError, D as parseDraftLabYaml, Dr as roleStateSchema, Et as resolveRootRoleSessionSpec, G as freezeInitialRoleArtifacts, Gn as generateLabId, H as provisionLaneWorktree, Hn as ArtifactError, It as freezeMethodDesignTicket, J as applyApprovedCoderGoal, Jt as CoderReceiptError, K as restoreCurrentRoleArtifacts, Kt as currentFactAnchor, M as CoderSubmissionError, N as freezeApprovedCoderSubmission, O as resolveDraftLabConfig, Ot as rolePromptFor, P as CandidateSnapshotError, Q as resolveApprovedCoderReview, S as acquireRuntimeLock, U as resolveRepositoryRefs, Un as ArtifactStore, Vn as resolveLocalAttemptWrapperPath, Vt as compileRolePacket, W as ActivationArtifactError, Wn as durableWriteFile, X as freezeApprovedCoderActivation, Y as compileApprovedCoderActivation, Z as installApprovedCoderGoal, Zt as coderImplementationReportOutputSchema, _t as observeOpenAgentTurn, a as resumeRootRoleSession, ai as sha256, at as compileReviewResolution, b as freezePostflightReviewArtifacts, bn as AttemptRuntimeConsumer, cn as readRoleBinding, cr as adoptRuntimeOwner, ct as registerReviewControlHandlers, d as assertRoleAssignmentReplay, dn as prepareRetryLocalAttempt, et as REVIEW_ACCEPTED_PAUSE, f as freezeMethodAssignment, fn as verifyRetryLocalAttemptReplay, fr as createRuntimeState, ft as sendReviewRequest, g as freezePreflightReviewArtifacts, gr as recordReviewResolution, gt as installLocalGoal, ht as compileLocalGoalIntent, i as createRootRoleSession, ii as canonicalJson$1, it as compileReviewControlCapability, j as reconcileCommunicationAcl, k as CommunicationAclError, kr as transitionRuntimeState, l as assertMethodAssignmentReplay, lr as autolabDomainSpec, m as freezeRoleAssignmentReceipt, mt as acquireLocalReviewHold, n as flushSessionDurably, o as verifyBorrowedRootRoleSession, p as freezeRoleAssignment, pt as LocalGoalError, qn as listCommittedManifestHashes, qt as registerFact, ri as DurableApiRecoveryStore, sn as freezeRoleBinding, t as SessionDurabilityError, u as assertRoleAssignmentMayDispatch, un as prepareInitialLocalAttempt, ut as reviewJudgeStart, v as freezePostflightResult, yr as reviewFreezeComplete, yt as pauseLocalGoalContinuation } from "./session-durability-CZKmnHh8.js";
+import { r as installSubmissionTools } from "./tool-Ca8RmQww.js";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { open, readFile } from "node:fs/promises";
@@ -1336,6 +1337,59 @@ function installControllerSurface(agent, runtime, kernelText) {
 			}
 		})));
 		disposers.push(agent.ctx.tools.register(defineTool({
+			name: "AutoLabCommitConfigRevision",
+			description: "Commit one Controller-authored configuration revision (revision N+1) on a running/paused Lab: writes revisions/NNNNNN with the complete new LAB_SPEC.md and lab.yaml, recomputes the resolved manifest, and atomically advances CURRENT. Research content (objective, families, scientific rules, contract, lane charters, evidence contract) may change; the Lab topology (roles, lanes, worktrees, repository, execution, hosts, GPU pool, communication, runner adapter) must remain byte-identical. Historical revisions and all packets/Attempts stay valid.",
+			parameters: {
+				...labIdParameter,
+				specText: {
+					type: "string",
+					required: true,
+					description: "Complete replacement LAB_SPEC.md text for the new revision."
+				},
+				configText: {
+					type: "string",
+					required: true,
+					description: "Complete replacement lab.yaml text for the new revision (topology fields must stay identical to the current revision)."
+				}
+			},
+			output: {
+				schema: {
+					type: "object",
+					additionalProperties: false,
+					properties: {
+						labId: {
+							type: "string",
+							required: true
+						},
+						revision: {
+							type: "number",
+							required: true
+						},
+						specHash: {
+							type: "string",
+							required: true
+						},
+						configHash: {
+							type: "string",
+							required: true
+						},
+						manifestHash: {
+							type: "string",
+							required: true
+						}
+					}
+				},
+				render: (_args, value) => [{
+					type: "text",
+					text: `AutoLab ${value.labId} committed configuration revision ${value.revision} (spec ${value.specHash.slice(0, 8)}…, config ${value.configHash.slice(0, 8)}…, manifest ${value.manifestHash.slice(0, 8)}…)`
+				}]
+			},
+			async execute(args, exec) {
+				requireInstalledCaller(agent, exec.agent, "AutoLabCommitConfigRevision");
+				return await runtime.commitConfigRevision(agent, args, exec.signal);
+			}
+		})));
+		disposers.push(agent.ctx.tools.register(defineTool({
 			name: "AutoLabAssignRole",
 			description: "Install one explicit Controller-authored Assignment on an Ops or enabled Coordinator role. Method keeps its dedicated Method-to-Preflight protocol. Content, output schema, and input references are opaque JSON; Runtime performs no routing or scientific interpretation.",
 			parameters: {
@@ -2017,6 +2071,7 @@ var AutoLabRuntime = class extends Service {
 	removeControllerCreatedListener;
 	removeControllerDisposedListener;
 	removeControllerGoalListener;
+	removeSubmissionTools;
 	teardownTask;
 	/** Serialize only mutations of the same Lab; independent Labs never block each other. */
 	operationTails = /* @__PURE__ */ new Map();
@@ -2030,6 +2085,7 @@ var AutoLabRuntime = class extends Service {
 	async [Service.init]() {
 		const owner = await acquireRuntimeLock(this.root);
 		this.owner = owner;
+		this.removeSubmissionTools = installSubmissionTools(this.ctx, this);
 		const disposeLifecycle = this.ctx.effect(() => async () => this.teardown(), "autolab.lifecycle");
 		try {
 			await this.artifacts.initialize();
@@ -2323,6 +2379,87 @@ var AutoLabRuntime = class extends Service {
 				state: cloneState(state),
 				directory: this.artifacts.labDirectory(labId),
 				frozen
+			};
+		});
+	}
+	/**
+	* Commit one Controller-authored configuration revision (revision N+1) on a
+	* running/paused Lab. The revision may change research content (objective,
+	* families, scientific rules, contract, lane charters, evidence contract)
+	* but NOT the Lab topology (roles, lanes, worktrees, repository, execution,
+	* hosts, GPU pool, communication ACL, runner adapter): those must remain
+	* byte-identical so every existing role, packet, and Attempt stays valid.
+	*/
+	async commitConfigRevision(caller, input, signal) {
+		const labId = validateLabId(input.labId);
+		return this.enqueue(labId, async () => {
+			signal?.throwIfAborted();
+			let state = this.requireState(labId);
+			this.assertControllerSession(caller, state);
+			if (state.lifecycle !== "running" && state.lifecycle !== "paused") throw new AutoLabRuntimeError(`Lab ${labId} is ${state.lifecycle}; a revision requires running or paused`, "NOT_READY");
+			const frozen = await this.artifacts.readCurrent(labId);
+			if (!sameConfigRef(state.config, frozen.ref)) throw new AutoLabRuntimeError(`Lab ${labId} CURRENT does not match RuntimeState`, "CONFIG_DRIFT");
+			const revision = frozen.ref.revision + 1;
+			const config = parseDraftLabYaml(input.configText);
+			const dialogueHead = await this.dialogue.appendControllerRecord({
+				labId,
+				controllerSessionId: state.controllerSessionId,
+				timestamp: Date.now(),
+				recordKind: "acceptance",
+				payload: {
+					action: "commit_revision",
+					revision
+				},
+				relatedRevision: revision
+			});
+			const rolePromptHashes = Object.fromEntries(config.roles.map((role) => [role.role_id, rolePromptFor(role.role_kind).sha256]));
+			const manifest = resolveDraftLabConfig(config, {
+				lab_id: labId,
+				revision,
+				controller_session_id: state.controllerSessionId,
+				dialogue_head_sha256: dialogueHead.recordHash,
+				lab_spec_sha256: sha256(input.specText),
+				lab_yaml_sha256: sha256(input.configText),
+				lab_directory: this.artifacts.labDirectory(labId),
+				autolab_plugin_version: AUTOLAB_PLUGIN_VERSION,
+				dsh_version: DSH_COMPATIBILITY_VERSION,
+				repository_base_sha: frozen.manifest.repository.base_sha,
+				lane_base_shas: Object.fromEntries(frozen.manifest.lanes.map((lane) => [lane.lane_id, lane.base_sha])),
+				role_prompt_sha256: rolePromptHashes
+			});
+			assertRevisionTopologyUnchanged(frozen.manifest, manifest);
+			signal?.throwIfAborted();
+			const next = await this.artifacts.freezeConfigRevision({
+				labId,
+				revision,
+				spec: input.specText,
+				config: input.configText,
+				manifest,
+				dialogueHeadHash: dialogueHead.recordHash
+			});
+			for (const charter of manifest.search.lane_charters) await durableWriteFile(join(this.artifacts.labDirectory(labId), "artifacts", "lanes", `${sha256(charter.lane_id)}.charter.json`), canonicalJson$1(charter.content), true);
+			state = await this.transition(state, state.lifecycle, void 0, next.ref);
+			await this.dialogue.appendControllerRecord({
+				labId,
+				controllerSessionId: state.controllerSessionId,
+				timestamp: Date.now(),
+				recordKind: "configure_action",
+				payload: {
+					action: "revision_committed",
+					revision: next.ref.revision,
+					specHash: next.ref.specHash,
+					configHash: next.ref.configHash,
+					manifestHash: next.ref.manifestHash,
+					dialogueHeadHash: next.ref.dialogueHeadHash
+				},
+				relatedRevision: next.ref.revision
+			});
+			return {
+				labId,
+				revision: next.ref.revision,
+				specHash: next.ref.specHash,
+				configHash: next.ref.configHash,
+				manifestHash: next.ref.manifestHash
 			};
 		});
 	}
@@ -3498,7 +3635,7 @@ var AutoLabRuntime = class extends Service {
 			const attempt = runSlot?.activeAttempt;
 			if (trial === void 0 || runSlot === void 0 || attempt === void 0 || attempt.phase !== "terminal" && attempt.phase !== "outcome_unknown") throw new AutoLabRuntimeError(`Trial ${input.trialId} RunSlot ${input.runSlotId} has no finished or outcome-unknown Attempt`, "REVIEW_NOT_READY");
 			const frozen = await this.artifacts.readCurrent(labId);
-			if (!sameConfigRef(state.config, frozen.ref) || trial.sourceRevision !== frozen.ref.revision) throw new AutoLabRuntimeError(`Lab ${labId} CURRENT does not match the Trial`, "CONFIG_DRIFT");
+			if (!sameConfigRef(state.config, frozen.ref) || trial.sourceRevision > frozen.ref.revision) throw new AutoLabRuntimeError(`Lab ${labId} CURRENT does not match the Trial`, "CONFIG_DRIFT");
 			const lane = frozen.manifest.lanes.find((value) => value.lane_id === trial.laneId);
 			const activeCandidate = state.candidates[trial.laneId];
 			const retiredCandidate = state.retiredCandidates[trial.candidateId];
@@ -3514,13 +3651,22 @@ var AutoLabRuntime = class extends Service {
 			const preflightVerdict = candidateIsRetired ? candidateReview?.verdict : approvedRoute?.review.verdict;
 			const approvedRouteMatches = candidateIsRetired ? candidateReview !== void 0 && candidateReview.stage === "preflight" && candidateReview.phase === "verdict_recorded" && candidateReview.verdict?.topLevelVerdict === "APPROVED" && candidateReview.resolution?.targetRoleId === lane.coder_role_id : approvedRoute?.reviewId === candidate.reviewId && approvedRoute.review.phase === "verdict_recorded";
 			const coderLineageMatches = candidateIsRetired ? candidate.coderSessionId === coder.sessionId : candidate.assignmentId === coder.goalInstall?.assignmentId || coder.goalInstall?.assignmentId !== void 0 && coder.goalInstall.assignmentId.startsWith(`coder:${candidate.reviewId}:fix:`);
-			if (preflight === void 0 || !approvedRouteMatches || candidate.coderSessionId !== coder.sessionId || !coderLineageMatches || candidate.sourceRevision !== frozen.ref.revision || preflightVerdict === void 0) throw new AutoLabRuntimeError(`Trial ${input.trialId} Candidate does not match its applied APPROVED Coder route`, "CONFIG_DRIFT");
+			if (preflight === void 0 || !approvedRouteMatches || candidate.coderSessionId !== coder.sessionId || !coderLineageMatches || candidate.sourceRevision > frozen.ref.revision || preflightVerdict === void 0) throw new AutoLabRuntimeError(`Trial ${input.trialId} Candidate does not match its applied APPROVED Coder route`, "CONFIG_DRIFT");
 			const matching = Object.entries(state.reviews).filter(([, review]) => review.stage === "postflight" && review.capability.workerRoleId === lane.coder_role_id && review.capability.judgeRoleId === lane.postflight_judge_role_id && review.artifactPath === attempt.path && review.capability.artifactHash === attempt.hash);
 			if (matching.length > 1) throw new AutoLabRuntimeError(`Attempt ${attempt.attemptId} has more than one Postflight review`, "CONFIG_DRIFT");
 			const existing = matching[0];
 			if (existing !== void 0) {
 				const [reviewId$1, review] = existing;
-				if (review.sourcePacket.path !== coder.packet.path || review.sourcePacket.hash !== coder.packet.hash || review.capability.workerSessionId !== coder.sessionId || review.capability.judgeSessionId !== judge.sessionId || review.capability.assignmentId !== `postflight:${reviewId$1}`) throw new AutoLabRuntimeError(`Postflight review ${reviewId$1} no longer matches its Lane identities`, "CONFIG_DRIFT");
+				if (review.capability.workerSessionId !== coder.sessionId || review.capability.judgeSessionId !== judge.sessionId || review.capability.assignmentId !== `postflight:${reviewId$1}`) throw new AutoLabRuntimeError(`Postflight review ${reviewId$1} no longer matches its Lane identities`, "CONFIG_DRIFT");
+				if (review.sourcePacket.path !== coder.packet.path || review.sourcePacket.hash !== coder.packet.hash) {
+					let packetBytes;
+					try {
+						packetBytes = await readFile(review.packetPath);
+					} catch {
+						throw new AutoLabRuntimeError(`Postflight review ${reviewId$1} packet cannot be read`, "CONFIG_DRIFT");
+					}
+					if (sha256(packetBytes) !== review.capability.packetHash) throw new AutoLabRuntimeError(`Postflight review ${reviewId$1} packet drifted`, "CONFIG_DRIFT");
+				}
 				if (review.result !== void 0) return controllerRequestPostflightResult(state.labId, review, "result_recorded");
 				const worker$1 = this.ctx.agents.get(SessionId(coder.sessionId));
 				if (worker$1 === void 0) throw new AutoLabRuntimeError(`Coder Session ${coder.sessionId} is not live`, "ROLE_ACTIVATION_UNAVAILABLE");
@@ -4060,7 +4206,7 @@ var AutoLabRuntime = class extends Service {
 			controllerGoal: stored
 		};
 		let goal = this.ctx.goals.get(live);
-		if (goal === void 0 || String(goal.id) !== stored.goalId || sha256(goal.objective) !== stored.objectiveHash) return {
+		if (goal === void 0 || String(goal.id) !== stored.goalId) return {
 			outcome: "no-goal",
 			controllerGoal: stored
 		};
@@ -4351,6 +4497,7 @@ var AutoLabRuntime = class extends Service {
 			}))],
 			messaging: this.requireSessionMessaging(),
 			controllerOffline: liveController === void 0,
+			authorizedManifestHashes: await listCommittedManifestHashes(frozen.manifest.authority_paths.lab_dir),
 			...allowPartial ? {
 				allowPartial: true,
 				quarantineSessions
@@ -5018,6 +5165,13 @@ var AutoLabRuntime = class extends Service {
 		const attemptPokeClose = attemptPoke?.close();
 		this.apiRecovery?.dispose();
 		this.apiRecovery = void 0;
+		const removeSubmissionTools = this.removeSubmissionTools;
+		this.removeSubmissionTools = void 0;
+		if (removeSubmissionTools !== void 0) try {
+			removeSubmissionTools();
+		} catch (error) {
+			errors.push(error);
+		}
 		for (const key of [
 			"removeControllerGoalListener",
 			"removeControllerDisposedListener",
@@ -5395,6 +5549,9 @@ function controllerAssignCoderFixResult(labId, coderRoleId, assignmentId, review
 * because its previous install attempt failed mid-flight: replacing the
 * Session's current Goal is then exactly the intent of the retry.
 */
+function assertRevisionTopologyUnchanged(current, next) {
+	if (canonicalJson$1(current.roles) !== canonicalJson$1(next.roles) || canonicalJson$1(current.lanes) !== canonicalJson$1(next.lanes) || canonicalJson$1(current.repository) !== canonicalJson$1(next.repository) || canonicalJson$1(current.execution) !== canonicalJson$1(next.execution) || canonicalJson$1(current.communication) !== canonicalJson$1(next.communication)) throw new AutoLabRuntimeError("Configuration revision changes the frozen Lab topology (roles, lanes, worktrees, repository, execution, hosts, GPU pool, communication); topology is immutable in a revision", "CONFIG_DRIFT");
+}
 function currentLiveGoalRef(ctx, sessionId) {
 	const agent = ctx.agents.get(SessionId(sessionId));
 	if (agent === void 0) return null;

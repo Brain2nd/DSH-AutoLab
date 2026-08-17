@@ -1,4 +1,5 @@
-import { C as DraftSnapshot, K as LabLifecycle, Z as RuntimeState, i as PreflightTopLevelVerdict, w as FrozenRevision } from "./preflight-verdict-Bl7oSf3q.js";
+import { C as DraftSnapshot, Y as LabLifecycle, et as RuntimeState, i as PreflightTopLevelVerdict, w as FrozenRevision } from "./preflight-verdict-CXTEcGGj.js";
+import "./tool-D47q6k_B.js";
 import { Agent } from "@deepseek-ai/dsh-agent";
 import { HarnessError } from "@deepseek-ai/dsh-llm";
 import { Context, Service } from "@deepseek-ai/cordis";
@@ -137,6 +138,20 @@ interface ControllerRegisterUserDirectiveResult {
   readonly factIndex: number;
   readonly runtimeRevision: number;
 }
+interface ControllerCommitConfigRevisionInput {
+  readonly labId: string;
+  /** Complete replacement LAB_SPEC.md text for the new revision. */
+  readonly specText: string;
+  /** Complete replacement lab.yaml text for the new revision. */
+  readonly configText: string;
+}
+interface ControllerCommitConfigRevisionResult {
+  readonly labId: string;
+  readonly revision: number;
+  readonly specHash: string;
+  readonly configHash: string;
+  readonly manifestHash: string;
+}
 interface ControllerRevealResult {
   readonly labId: string;
   readonly revealState: 'revealed';
@@ -234,6 +249,7 @@ declare class AutoLabRuntime extends Service {
   private removeControllerCreatedListener;
   private removeControllerDisposedListener;
   private removeControllerGoalListener;
+  private removeSubmissionTools;
   private teardownTask;
   /** Serialize only mutations of the same Lab; independent Labs never block each other. */
   private readonly operationTails;
@@ -244,6 +260,15 @@ declare class AutoLabRuntime extends Service {
   show(caller: Agent, labId: string, signal?: AbortSignal): Promise<ShowLabResult>;
   readForController(caller: Agent, labId: string, signal?: AbortSignal): Promise<ControllerReadResult>;
   commit(caller: Agent, labId: string, signal?: AbortSignal): Promise<ShowLabResult>;
+  /**
+   * Commit one Controller-authored configuration revision (revision N+1) on a
+   * running/paused Lab. The revision may change research content (objective,
+   * families, scientific rules, contract, lane charters, evidence contract)
+   * but NOT the Lab topology (roles, lanes, worktrees, repository, execution,
+   * hosts, GPU pool, communication ACL, runner adapter): those must remain
+   * byte-identical so every existing role, packet, and Attempt stays valid.
+   */
+  commitConfigRevision(caller: Agent, input: ControllerCommitConfigRevisionInput, signal?: AbortSignal): Promise<ControllerCommitConfigRevisionResult>;
   status(caller: Agent, labId: string): RuntimeState;
   reveal(caller: Agent, labId: string, signal?: AbortSignal): Promise<ControllerRevealResult>;
   /**

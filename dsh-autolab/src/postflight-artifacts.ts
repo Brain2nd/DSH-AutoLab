@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import { isAbsolute, join } from 'node:path'
 
-import { durableWriteFile, type FrozenRevision } from './artifacts.js'
+import { durableWriteFile, isCommittedManifestHash, readRevisionAtPath, type FrozenRevision } from './artifacts.js'
 import { readRoleBinding, type StoredRoleBinding } from './binding.js'
 import { currentFactAnchor } from './fact-registry.js'
 import { canonicalJson, sha256 } from './integrity.js'
@@ -344,7 +344,7 @@ async function resolveJudge(input: FreezePostflightReviewArtifactsInput): Promis
     || canonicalJson(stored.receipt) !== canonicalJson(receipt)
     || receipt.receiptHash !== input.judgeBinding.hash
     || receipt.labId !== manifest.lab_id
-    || receipt.manifestHash !== input.frozen.ref.manifestHash
+    || !(await isCommittedManifestHash(manifest.authority_paths.lab_dir, receipt.manifestHash))
     || receipt.roleId !== role.role_id
     || receipt.roleKind !== 'postflight_judge'
     || receipt.sessionId !== input.judgeSessionId
@@ -412,18 +412,23 @@ async function readCurrentCoderPacket(
     sha256(packet.header.assignment_id),
     `${sha256(coderRoleId)}.json`,
   )
+  const packetRevision = await readRevisionAtPath(
+    manifest.authority_paths.lab_dir,
+    packet.anchors.source_revision,
+    input.frozen,
+  )
   if (canonicalJson(packet) !== text
     || input.currentCoderPacket.path !== expectedPath
     || packet.header.lab_id !== manifest.lab_id
     || packet.header.lane_id !== laneId
     || packet.header.role_id !== coderRoleId
     || packet.header.role_kind !== 'coder'
-    || packet.anchors.source_revision !== input.frozen.ref.revision
-    || packet.anchors.dialogue_head_sha256 !== input.frozen.ref.dialogueHeadHash
-    || packet.anchors.lab_spec_sha256 !== input.frozen.ref.specHash
-    || packet.anchors.lab_yaml_sha256 !== input.frozen.ref.configHash
-    || packet.anchors.resolved_manifest_sha256 !== input.frozen.ref.manifestHash
-    || packet.anchors.campaign_contract_sha256 !== manifest.campaign_contract_sha256
+    || packet.anchors.source_revision > input.frozen.ref.revision
+    || packet.anchors.dialogue_head_sha256 !== packetRevision.ref.dialogueHeadHash
+    || packet.anchors.lab_spec_sha256 !== packetRevision.ref.specHash
+    || packet.anchors.lab_yaml_sha256 !== packetRevision.ref.configHash
+    || packet.anchors.resolved_manifest_sha256 !== packetRevision.ref.manifestHash
+    || packet.anchors.campaign_contract_sha256 !== packetRevision.manifest.campaign_contract_sha256
     || packet.anchors.runtime_revision > input.runtimeRevision) {
     throw new PostflightArtifactError(
       'current Coder Packet does not bind this CURRENT Lane',

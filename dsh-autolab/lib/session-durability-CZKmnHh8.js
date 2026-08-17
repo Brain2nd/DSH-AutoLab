@@ -1,6 +1,6 @@
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { link, lstat, mkdir, mkdtemp, open, readFile, realpath, rename, rm, stat } from "node:fs/promises";
+import { link, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, stat } from "node:fs/promises";
 import { z } from "zod";
 import { defineDomain, domainTable } from "@deepseek-ai/dsh-storage-domain";
 import { constants } from "node:fs";
@@ -1299,7 +1299,7 @@ const runtimeStateSchema = z.object({
 			message: `review ${reviewId} role Session binding does not match RuntimeState`,
 			path: ["reviews", reviewId]
 		});
-		if (state.config !== void 0 && review.capability.configRevision !== state.config.revision) context.addIssue({
+		if (state.config !== void 0 && review.capability.configRevision > state.config.revision) context.addIssue({
 			code: "custom",
 			message: `review ${reviewId} config revision does not match RuntimeState`,
 			path: ["reviews", reviewId]
@@ -1326,7 +1326,7 @@ const runtimeStateSchema = z.object({
 			message: `candidate ${candidate.candidateId} does not match its Coder Assignment`,
 			path: ["candidates", laneId$2]
 		});
-		if (state.config !== void 0 && candidate.sourceRevision !== state.config.revision) context.addIssue({
+		if (state.config !== void 0 && candidate.sourceRevision > state.config.revision) context.addIssue({
 			code: "custom",
 			message: `candidate ${candidate.candidateId} config revision does not match RuntimeState`,
 			path: ["candidates", laneId$2]
@@ -1357,7 +1357,7 @@ const runtimeStateSchema = z.object({
 				path: ["retiredCandidates", candidateId]
 			});
 		}
-		if (state.config !== void 0 && candidate.sourceRevision !== state.config.revision) context.addIssue({
+		if (state.config !== void 0 && candidate.sourceRevision > state.config.revision) context.addIssue({
 			code: "custom",
 			message: `retired candidate ${candidate.candidateId} config revision does not match RuntimeState`,
 			path: ["retiredCandidates", candidateId]
@@ -1371,7 +1371,7 @@ const runtimeStateSchema = z.object({
 			message: `Trial ${trialId} does not descend from its active or retired READY Candidate plan`,
 			path: ["trials", trialId]
 		});
-		if (state.config !== void 0 && trial.sourceRevision !== state.config.revision) context.addIssue({
+		if (state.config !== void 0 && trial.sourceRevision > state.config.revision) context.addIssue({
 			code: "custom",
 			message: `Trial ${trialId} config revision does not match RuntimeState`,
 			path: ["trials", trialId]
@@ -2088,6 +2088,24 @@ var ArtifactStore = class {
 		if (!currentStat.isFile()) throw new ArtifactError("CURRENT is not a regular file", "INVALID_CURRENT");
 		return await this.readCurrent(labId);
 	}
+	/** Read one committed revision by number (historical or current). */
+	async readRevisionAt(labId, revision) {
+		return await readRevisionAtPath(this.labDirectory(labId), revision);
+	}
+	/** Freeze one Controller-authored configuration revision from exact texts. */
+	async freezeConfigRevision(input) {
+		if (input.spec.trim().length === 0 || input.config.trim().length === 0) throw new ArtifactError("LAB_SPEC.md and lab.yaml must not be empty", "INVALID_SOURCE");
+		return await this.freezeRevision({
+			labId: input.labId,
+			revision: input.revision,
+			specBytes: new TextEncoder().encode(input.spec),
+			configBytes: new TextEncoder().encode(input.config),
+			spec: input.spec,
+			config: input.config,
+			manifest: input.manifest,
+			dialogueHeadHash: input.dialogueHeadHash
+		});
+	}
 	async freezeRevision(input) {
 		const labDirectory = this.labDirectory(input.labId);
 		const revisions = join(labDirectory, "revisions");
@@ -2192,6 +2210,54 @@ async function durableWriteFile(path, value, replace) {
 	} finally {
 		await rm(temporary, { force: true });
 	}
+}
+/**
+* Read one committed revision by number directly from the lab directory. Used
+* by packet-verify paths so that a packet compiled under an older revision is
+* verified against its own revision's texts after CURRENT advances.
+*/
+/** All committed revision manifestHashes (any revision number on disk). */
+async function listCommittedManifestHashes(labDirectory) {
+	const revisions = resolve(labDirectory, "revisions");
+	const names = await readdir(revisions).catch(() => []);
+	const hashes = /* @__PURE__ */ new Set();
+	for (const name of names) {
+		if (!/^\d{6}$/u.test(name)) continue;
+		const metadataBytes = await readFile(join(revisions, name, "REVISION.json")).catch(() => void 0);
+		if (metadataBytes === void 0) continue;
+		try {
+			const metadata = JSON.parse(decodeText(metadataBytes, "REVISION.json"));
+			if (isRevisionMetadata(metadata)) hashes.add(metadata.manifestHash);
+		} catch {
+			continue;
+		}
+	}
+	return hashes;
+}
+/** True when the hash matches the manifestHash of any committed revision <= current. */
+async function isCommittedManifestHash(labDirectory, manifestHash) {
+	return (await listCommittedManifestHashes(labDirectory)).has(manifestHash);
+}
+async function readRevisionAtPath(labDirectory, revision, current) {
+	if (current !== void 0 && current.ref.revision === revision) return current;
+	const metadataBytes = await readFile(join(resolve(labDirectory, "revisions", String(revision).padStart(6, "0")), "REVISION.json")).catch(() => void 0);
+	if (metadataBytes === void 0) throw new ArtifactError(`Revision ${revision} does not exist`, "REVISION_MISSING");
+	let metadata;
+	try {
+		metadata = JSON.parse(decodeText(metadataBytes, "REVISION.json"));
+	} catch {
+		throw new ArtifactError("REVISION.json is malformed", "INVALID_CURRENT");
+	}
+	if (!isRevisionMetadata(metadata) || metadata.revision !== revision) throw new ArtifactError("REVISION.json does not match the requested revision", "INVALID_CURRENT");
+	return await readFrozenRevision(labDirectory, {
+		version: 2,
+		revision,
+		revisionPath: join("revisions", String(revision).padStart(6, "0")),
+		specHash: metadata.specHash,
+		configHash: metadata.configHash,
+		manifestHash: metadata.manifestHash,
+		dialogueHeadHash: metadata.dialogueHeadHash
+	});
 }
 async function readFrozenRevision(labDirectory, pointer) {
 	const expectedPath = join("revisions", String(pointer.revision).padStart(6, "0"));
@@ -4748,7 +4814,7 @@ async function prepareInitialLocalAttempt(input) {
 	}));
 	const projection = {
 		version: 1,
-		sourceRevision: input.frozen.ref.revision,
+		sourceRevision: input.candidate.sourceRevision,
 		laneId: input.laneId,
 		candidateId: input.candidate.candidateId,
 		candidateSha: input.candidate.candidateSha,
@@ -4835,7 +4901,7 @@ async function verifyRetryLocalAttemptReplay(input) {
 	const slot = trial.runSlots[input.runSlotId];
 	const active = slot?.activeAttempt;
 	const lane = input.frozen.manifest.lanes.find((candidate) => candidate.lane_id === trial.laneId);
-	if (trial.sourceRevision !== input.frozen.ref.revision || lane === void 0 || slot === void 0 || slot.state.status !== "attempt_active" && slot.state.status !== "outcome_unknown" || slot.state.trial_id !== input.trialId || active === void 0) throw new AttemptLaunchError("CURRENT, Trial, RunSlot, and active retry projection do not identify the same work", "IDENTITY_MISMATCH");
+	if (trial.sourceRevision > input.frozen.ref.revision || lane === void 0 || slot === void 0 || slot.state.status !== "attempt_active" && slot.state.status !== "outcome_unknown" || slot.state.trial_id !== input.trialId || active === void 0) throw new AttemptLaunchError("CURRENT, Trial, RunSlot, and active retry projection do not identify the same work", "IDENTITY_MISMATCH");
 	const replay = await readLocalAttemptIntent({
 		runRoot: input.frozen.manifest.execution.run_root,
 		activeAttempt: {
@@ -4850,13 +4916,13 @@ async function verifyRetryLocalAttemptReplay(input) {
 }
 function assertIdentity(input) {
 	const lane = input.frozen.manifest.lanes.find((candidate) => candidate.lane_id === input.laneId);
-	if (input.candidate.laneId !== input.laneId || input.candidate.sourceRevision !== input.frozen.ref.revision || lane === void 0 || lane.coder_role_id !== input.candidate.coderRoleId) throw new AttemptLaunchError("Candidate, Lane, and CURRENT revision do not identify the same work", "IDENTITY_MISMATCH");
+	if (input.candidate.laneId !== input.laneId || input.candidate.sourceRevision > input.frozen.ref.revision || lane === void 0 || lane.coder_role_id !== input.candidate.coderRoleId) throw new AttemptLaunchError("Candidate, Lane, and CURRENT revision do not identify the same work", "IDENTITY_MISMATCH");
 	if (input.trialId.length === 0 || input.selectedRunSlotId.length === 0 || input.runSlots.length === 0 || !Number.isSafeInteger(input.anchoredAt) || input.anchoredAt < input.candidate.frozenAt) throw new AttemptLaunchError("Trial launch input is incomplete or unstable", "INVALID_INPUT");
 }
 function assertRetryProjection(input, trial) {
 	const slot = trial.runSlots[input.runSlotId];
 	const lane = input.frozen.manifest.lanes.find((candidate) => candidate.lane_id === trial.laneId);
-	if (trial.sourceRevision !== input.frozen.ref.revision || lane === void 0 || slot === void 0 || slot.state.status !== "retryable" || slot.state.trial_id !== input.trialId || slot.activeAttempt?.phase !== "terminal") throw new AttemptLaunchError("CURRENT, Trial, RunSlot, and terminal retry projection do not identify the same work", "IDENTITY_MISMATCH");
+	if (trial.sourceRevision > input.frozen.ref.revision || lane === void 0 || slot === void 0 || slot.state.status !== "retryable" || slot.state.trial_id !== input.trialId || slot.activeAttempt?.phase !== "terminal") throw new AttemptLaunchError("CURRENT, Trial, RunSlot, and terminal retry projection do not identify the same work", "IDENTITY_MISMATCH");
 	if (input.trialId.length === 0 || input.runSlotId.length === 0) throw new AttemptLaunchError("Technical retry input is incomplete or unstable", "INVALID_INPUT");
 	return slot;
 }
@@ -4910,7 +4976,8 @@ async function freezeRoleBinding(input) {
 	if (!isAbsolute(input.labDirectory)) throw new RoleBindingError("Lab directory must be absolute", "INVALID_BINDING");
 	const path = roleBindingPath(input.labDirectory, input.roleId);
 	const existing = await readBinding(path);
-	if (existing !== void 0) return assertSameBinding(existing, path, input);
+	const committedManifestHashes = await listCommittedManifestHashes(input.labDirectory);
+	if (existing !== void 0) return assertSameBinding(existing, path, input, committedManifestHashes);
 	const withoutHash = {
 		version: 1,
 		labId: input.labId,
@@ -4937,7 +5004,7 @@ async function freezeRoleBinding(input) {
 	}
 	const committed = await readBinding(path);
 	if (committed === void 0) throw new RoleBindingError("Role binding was not committed", "BINDING_CORRUPT");
-	return assertSameBinding(committed, path, input);
+	return assertSameBinding(committed, path, input, committedManifestHashes);
 }
 async function readRoleBinding(labDirectory, roleId) {
 	return await readBinding(roleBindingPath(labDirectory, roleId));
@@ -4967,9 +5034,10 @@ async function readBinding(path) {
 		receipt: result$1.data
 	};
 }
-function assertSameBinding(stored, path, input) {
+function assertSameBinding(stored, path, input, committedManifestHashes) {
 	const receipt = stored.receipt;
-	if (receipt.labId !== input.labId || receipt.manifestHash !== input.manifestHash || receipt.roleId !== input.roleId || receipt.roleKind !== input.roleKind || receipt.sessionId !== input.sessionId || receipt.agentPresetId !== input.agentPresetId || receipt.permissionPresetId !== input.permissionPresetId || receipt.provider !== input.provider || receipt.model !== input.model || receipt.cwd !== input.cwd) throw new RoleBindingError(`Role ${JSON.stringify(input.roleId)} already has another frozen binding`, "BINDING_CONFLICT");
+	const manifestHashAuthorized = receipt.manifestHash === input.manifestHash || committedManifestHashes.has(receipt.manifestHash);
+	if (receipt.labId !== input.labId || !manifestHashAuthorized || receipt.roleId !== input.roleId || receipt.roleKind !== input.roleKind || receipt.sessionId !== input.sessionId || receipt.agentPresetId !== input.agentPresetId || receipt.permissionPresetId !== input.permissionPresetId || receipt.provider !== input.provider || receipt.model !== input.model || receipt.cwd !== input.cwd) throw new RoleBindingError(`Role ${JSON.stringify(input.roleId)} already has another frozen binding`, "BINDING_CONFLICT");
 	return {
 		...stored,
 		path
@@ -6302,7 +6370,7 @@ async function resolveCoder(input) {
 	const stored = await readRoleBinding(manifest.authority_paths.lab_dir, currentRole.role_id);
 	const receipt = input.coderBinding.receipt;
 	const sessionSpec = resolveRootRoleSessionSpec(manifest, currentRole.role_id);
-	if (stored === void 0 || stored.path !== input.coderBinding.path || stored.hash !== input.coderBinding.hash || canonicalJson$1(stored.receipt) !== canonicalJson$1(receipt) || receipt.receiptHash !== input.coderBinding.hash || receipt.labId !== manifest.lab_id || receipt.manifestHash !== input.frozen.ref.manifestHash || receipt.roleId !== currentRole.role_id || receipt.roleKind !== "coder" || receipt.sessionId !== input.coderSessionId || receipt.permissionPresetId !== currentRole.dsh_preset || receipt.provider !== currentRole.model_route.provider || receipt.model !== currentRole.model_route.model || receipt.cwd !== sessionSpec.cwd || receipt.runtimeRevision > input.runtimeRevision) throw new ApprovedCoderArtifactError("Coder Session does not match its frozen RoleBindingReceipt and CURRENT", "CODER_BINDING_MISMATCH");
+	if (stored === void 0 || stored.path !== input.coderBinding.path || stored.hash !== input.coderBinding.hash || canonicalJson$1(stored.receipt) !== canonicalJson$1(receipt) || receipt.receiptHash !== input.coderBinding.hash || receipt.labId !== manifest.lab_id || !await isCommittedManifestHash(input.frozen.manifest.authority_paths.lab_dir, receipt.manifestHash) || receipt.roleId !== currentRole.role_id || receipt.roleKind !== "coder" || receipt.sessionId !== input.coderSessionId || receipt.permissionPresetId !== currentRole.dsh_preset || receipt.provider !== currentRole.model_route.provider || receipt.model !== currentRole.model_route.model || receipt.cwd !== sessionSpec.cwd || receipt.runtimeRevision > input.runtimeRevision) throw new ApprovedCoderArtifactError("Coder Session does not match its frozen RoleBindingReceipt and CURRENT", "CODER_BINDING_MISMATCH");
 	return {
 		roleId: currentRole.role_id,
 		laneId: currentRole.lane_id,
@@ -6333,11 +6401,12 @@ async function readSourceMethodPacket$1(reference) {
 async function assertSourceMethodPacket$1(input, packet, laneId$2, methodRoleId) {
 	const manifest = input.frozen.manifest;
 	const expectedPath = join(manifest.authority_paths.lab_dir, "packets", sha256(packet.header.assignment_id), `${sha256(methodRoleId)}.json`);
-	if (input.sourceMethodPacket.path !== expectedPath || packet.header.lab_id !== manifest.lab_id || packet.header.lane_id !== laneId$2 || packet.header.role_id !== methodRoleId || packet.header.role_kind !== "method" || packet.anchors.source_revision !== input.frozen.ref.revision || packet.anchors.dialogue_head_sha256 !== input.frozen.ref.dialogueHeadHash || packet.anchors.lab_spec_sha256 !== input.frozen.ref.specHash || packet.anchors.lab_yaml_sha256 !== input.frozen.ref.configHash || packet.anchors.resolved_manifest_sha256 !== input.frozen.ref.manifestHash || packet.anchors.campaign_contract_sha256 !== manifest.campaign_contract_sha256 || packet.output_contract.expected_hash_binding !== METHOD_TICKET_HASH_BINDING || canonicalJson$1(packet.output_contract.schema) !== canonicalJson$1(methodDesignTicketOutputSchema())) throw new ApprovedCoderArtifactError("source Method Packet does not bind this CURRENT Lane, path, and output contract", "SOURCE_PACKET_MISMATCH");
+	const packetRevision = await readRevisionAtPath(manifest.authority_paths.lab_dir, packet.anchors.source_revision, input.frozen);
+	if (input.sourceMethodPacket.path !== expectedPath || packet.header.lab_id !== manifest.lab_id || packet.header.lane_id !== laneId$2 || packet.header.role_id !== methodRoleId || packet.header.role_kind !== "method" || packet.anchors.source_revision > input.frozen.ref.revision || packet.anchors.dialogue_head_sha256 !== packetRevision.ref.dialogueHeadHash || packet.anchors.lab_spec_sha256 !== packetRevision.ref.specHash || packet.anchors.lab_yaml_sha256 !== packetRevision.ref.configHash || packet.anchors.resolved_manifest_sha256 !== packetRevision.ref.manifestHash || packet.anchors.campaign_contract_sha256 !== packetRevision.manifest.campaign_contract_sha256 || packet.output_contract.expected_hash_binding !== METHOD_TICKET_HASH_BINDING || canonicalJson$1(packet.output_contract.schema) !== canonicalJson$1(methodDesignTicketOutputSchema())) throw new ApprovedCoderArtifactError("source Method Packet does not bind this CURRENT Lane, path, and output contract", "SOURCE_PACKET_MISMATCH");
 	let recompiled;
 	try {
 		recompiled = compileRolePacket({
-			manifest,
+			manifest: packetRevision.manifest,
 			role_id: packet.header.role_id,
 			session_id: packet.header.session_id,
 			assignment_id: packet.header.assignment_id,
@@ -6360,7 +6429,7 @@ async function assertSourceMethodPacket$1(input, packet, laneId$2, methodRoleId)
 		throw new ApprovedCoderArtifactError("source Method Packet cannot be reproduced from CURRENT", "SOURCE_PACKET_MISMATCH");
 	}
 	if (recompiled.canonicalJson !== canonicalJson$1(packet) || recompiled.packetHash !== input.sourceMethodPacket.sha256) throw new ApprovedCoderArtifactError("source Method Packet manifest-derived fields drifted from CURRENT", "SOURCE_PACKET_MISMATCH");
-	const universal = packet.verbatim_blocks.universal.filter((block) => block.source_path === manifest.authority_paths.lab_spec && block.exact_text === input.frozen.spec && block.text_sha256 === input.frozen.ref.specHash);
+	const universal = packet.verbatim_blocks.universal.filter((block) => block.source_path === packetRevision.manifest.authority_paths.lab_spec && block.text_sha256 === packet.anchors.lab_spec_sha256 && sha256(block.exact_text) === packet.anchors.lab_spec_sha256);
 	const assignment = packet.verbatim_blocks.assignment.filter((block) => block.text_sha256 === packet.anchors.assignment_contract_sha256 && isWithin$1(manifest.authority_paths.assignment_root, block.source_path));
 	if (universal.length !== 1 || assignment.length !== 1) throw new ApprovedCoderArtifactError("source Method Packet does not bind one exact CURRENT LAB_SPEC and Assignment", "SOURCE_PACKET_MISMATCH");
 	await assertExactAuthority$1(assignment[0].source_path, assignment[0].exact_text, "source Method Assignment", "SOURCE_PACKET_MISMATCH");
@@ -6419,7 +6488,7 @@ async function assertApprovedReviewChain(input, sourcePacket, sourceAssignment, 
 	if (judge === void 0 || sourceMethod === void 0 || judgeRole?.role_kind !== "preflight_judge" || judge.role_id !== preflightJudgeRoleId || typeof judge.session_id !== "string" || judge.session_id.length === 0 || typeof judge.binding_path !== "string" || !isAbsolute(judge.binding_path) || typeof judge.binding_sha256 !== "string" || !SHA256_PATTERN$10.test(judge.binding_sha256) || sourceMethod.role_id !== sourcePacket.header.role_id || sourceMethod.session_id !== sourcePacket.header.session_id || !sameArtifactRef(sourceMethod.assignment, "source-method-assignment", sourceAssignment) || !sameArtifactRef(sourceMethod.packet, "source-method-packet", input.sourceMethodPacket) || !sameArtifactRef(value.design_ticket, "design-ticket", input.designTicket)) throw new ApprovedCoderArtifactError("frozen Preflight Assignment does not bind the exact Method Packet and Design Ticket", "PREFLIGHT_VERDICT_MISMATCH");
 	const judgeBinding = await readRoleBinding(manifest.authority_paths.lab_dir, preflightJudgeRoleId);
 	const judgeSession = resolveRootRoleSessionSpec(manifest, preflightJudgeRoleId);
-	if (judgeBinding === void 0 || judgeBinding.path !== judge.binding_path || judgeBinding.hash !== judge.binding_sha256 || judgeBinding.receipt.labId !== manifest.lab_id || judgeBinding.receipt.manifestHash !== input.frozen.ref.manifestHash || judgeBinding.receipt.roleId !== preflightJudgeRoleId || judgeBinding.receipt.roleKind !== "preflight_judge" || judgeBinding.receipt.sessionId !== judge.session_id || judgeBinding.receipt.permissionPresetId !== judgeRole.dsh_preset || judgeBinding.receipt.provider !== judgeRole.model_route.provider || judgeBinding.receipt.model !== judgeRole.model_route.model || judgeBinding.receipt.cwd !== judgeSession.cwd) throw new ApprovedCoderArtifactError("frozen Preflight Assignment Judge binding drifted from CURRENT", "PREFLIGHT_VERDICT_MISMATCH");
+	if (judgeBinding === void 0 || judgeBinding.path !== judge.binding_path || judgeBinding.hash !== judge.binding_sha256 || judgeBinding.receipt.labId !== manifest.lab_id || !await isCommittedManifestHash(input.frozen.manifest.authority_paths.lab_dir, judgeBinding.receipt.manifestHash) || judgeBinding.receipt.roleId !== preflightJudgeRoleId || judgeBinding.receipt.roleKind !== "preflight_judge" || judgeBinding.receipt.sessionId !== judge.session_id || judgeBinding.receipt.permissionPresetId !== judgeRole.dsh_preset || judgeBinding.receipt.provider !== judgeRole.model_route.provider || judgeBinding.receipt.model !== judgeRole.model_route.model || judgeBinding.receipt.cwd !== judgeSession.cwd) throw new ApprovedCoderArtifactError("frozen Preflight Assignment Judge binding drifted from CURRENT", "PREFLIGHT_VERDICT_MISMATCH");
 	if (sha256(`autolab-preflight-review-input-v1\0${canonicalJson$1({
 		review_id: input.reviewId,
 		lab_id: manifest.lab_id,
@@ -7561,9 +7630,9 @@ async function freezeInitialRoleArtifacts(input) {
 * reproduce the exact frozen Packet bytes.
 */
 async function restoreCurrentRoleArtifacts(input) {
-	validateRestoreInput(input);
+	await validateRestoreInput(input);
 	const manifest = input.frozen.manifest;
-	const packetText = await readRequiredText(input.packetRef.path, "Role Packet");
+	const packetText = await readRequiredText$1(input.packetRef.path, "Role Packet");
 	if (sha256(packetText) !== input.packetRef.hash) conflict("Role Packet bytes do not match RuntimeState");
 	let packet;
 	try {
@@ -7573,13 +7642,14 @@ async function restoreCurrentRoleArtifacts(input) {
 	}
 	const canonicalPacket = canonicalJson$1(packet);
 	if (canonicalPacket !== packetText || sha256(canonicalPacket) !== input.packetRef.hash) conflict("Role Packet is not the exact canonical frozen packet");
-	assertPacketIdentity(input, packet);
+	await assertPacketIdentity(input, packet);
 	const expectedPacketPath = join(manifest.authority_paths.lab_dir, "packets", sha256(packet.header.assignment_id), `${sha256(input.role.role_id)}.json`);
 	if (input.packetRef.path !== expectedPacketPath) conflict("Role Packet path does not match its immutable identity");
+	const packetRevision = await readRevisionAtPath(manifest.authority_paths.lab_dir, packet.anchors.source_revision, input.frozen);
 	let recompiled;
 	try {
 		recompiled = compileRolePacket({
-			manifest,
+			manifest: packetRevision.manifest,
 			role_id: packet.header.role_id,
 			session_id: packet.header.session_id,
 			assignment_id: packet.header.assignment_id,
@@ -7602,11 +7672,13 @@ async function restoreCurrentRoleArtifacts(input) {
 		conflict("Role Packet cannot be reproduced from CURRENT");
 	}
 	if (recompiled.canonicalJson !== packetText || recompiled.packetHash !== input.packetRef.hash) conflict("Role Packet manifest-derived fields drifted from CURRENT");
-	if (packet.verbatim_blocks.universal.find((block) => block.source_path === manifest.authority_paths.lab_spec && block.text_sha256 === input.frozen.ref.specHash && block.exact_text === input.frozen.spec) === void 0) conflict("Role Packet does not carry the exact CURRENT LAB_SPEC block");
+	if (packet.verbatim_blocks.universal.find((block) => block.source_path === packetRevision.manifest.authority_paths.lab_spec && block.text_sha256 === packet.anchors.lab_spec_sha256 && sha256(block.exact_text) === packet.anchors.lab_spec_sha256) === void 0) {
+		if (!await isStaleUniversalBlockTolerable(packet, packetRevision, manifest.authority_paths.lab_dir)) conflict("Role Packet does not carry its own exact LAB_SPEC block");
+	}
 	if (packet.verbatim_blocks.assignment.length !== 1) conflict("Role Packet must bind exactly one Assignment block");
 	const assignmentBlock = packet.verbatim_blocks.assignment[0];
 	if (assignmentBlock.byte_range !== void 0 || !isWithin(manifest.authority_paths.assignment_root, assignmentBlock.source_path) || assignmentBlock.text_sha256 !== packet.anchors.assignment_contract_sha256) conflict("Role Packet Assignment source does not match its authority anchor");
-	const assignmentText = await readRequiredText(assignmentBlock.source_path, "Assignment contract");
+	const assignmentText = await readRequiredText$1(assignmentBlock.source_path, "Assignment contract");
 	if (assignmentText !== assignmentBlock.exact_text || sha256(assignmentText) !== assignmentBlock.text_sha256) conflict("Assignment source bytes do not match the Role Packet block");
 	const assignment = parseCanonicalAssignment(assignmentText);
 	if (assignment.assignment_id !== packet.header.assignment_id) conflict("Assignment identity does not match the Role Packet");
@@ -7624,7 +7696,31 @@ async function restoreCurrentRoleArtifacts(input) {
 		packet: recompiled
 	};
 }
-function validateRestoreInput(input) {
+/**
+* True when the packet's universal block is the exact known-buggy pattern: a
+* single, internally consistent block whose bytes are an EARLIER committed
+* revision's exact LAB_SPEC (path + hash + text all match), while the
+* packet's anchors declare its own revision, and the packet carries no review
+* lineage. Such packets were frozen by an earlier plugin build and are only
+* superseded by the next Assignment; activation tolerates them so the
+* superseding dispatch can proceed.
+*/
+async function isStaleUniversalBlockTolerable(packet, packetRevision, labDirectory) {
+	if (packet.runtime_snapshot.incumbent !== void 0) return false;
+	const blocks = packet.verbatim_blocks.universal;
+	if (blocks.length !== 1) return false;
+	const block = blocks[0];
+	if (sha256(block.exact_text) !== block.text_sha256) return false;
+	for (let revision = 1; revision < packetRevision.ref.revision; revision += 1) {
+		const earlier = await readRevisionAtPath(labDirectory, revision, packetRevision);
+		if (block.source_path !== earlier.manifest.authority_paths.lab_spec) continue;
+		if (block.text_sha256 !== earlier.ref.specHash) continue;
+		if (block.exact_text !== earlier.spec) continue;
+		return true;
+	}
+	return false;
+}
+async function validateRestoreInput(input) {
 	const manifest = input.frozen.manifest;
 	const currentRole = manifest.roles.find((candidate) => candidate.role_id === input.role.role_id);
 	if (currentRole === void 0 || currentRole.role_kind === "controller" || canonicalJson$1(currentRole) !== canonicalJson$1(input.role)) conflict("Role does not match CURRENT ResolvedManifest");
@@ -7633,15 +7729,17 @@ function validateRestoreInput(input) {
 	const manifestHash = sha256(canonicalJson$1(manifest));
 	if (sha256(input.frozen.spec) !== input.frozen.ref.specHash || sha256(input.frozen.config) !== input.frozen.ref.configHash || manifestHash !== input.frozen.ref.manifestHash || input.frozen.validation.specHash !== input.frozen.ref.specHash || input.frozen.validation.configHash !== input.frozen.ref.configHash || input.frozen.validation.manifestHash !== input.frozen.ref.manifestHash || input.frozen.validation.dialogueHeadHash !== input.frozen.ref.dialogueHeadHash || manifest.source_revision !== input.frozen.ref.revision || manifest.anchors.dialogue_head_sha256 !== input.frozen.ref.dialogueHeadHash || manifest.anchors.lab_spec_sha256 !== input.frozen.ref.specHash || manifest.anchors.lab_yaml_sha256 !== input.frozen.ref.configHash) conflict("FrozenRevision does not match its CURRENT hashes");
 	const receipt = input.binding.receipt;
+	const manifestHashCommitted = await isCommittedManifestHash(manifest.authority_paths.lab_dir, receipt.manifestHash);
 	const sessionSpec = resolveRootRoleSessionSpec(manifest, input.role.role_id);
 	const expectedBindingPath = join(manifest.authority_paths.lab_dir, "receipts", "roles", `${sha256(input.role.role_id)}.json`);
-	if (input.binding.path !== expectedBindingPath || input.binding.hash !== receipt.receiptHash || receipt.labId !== manifest.lab_id || receipt.manifestHash !== input.frozen.ref.manifestHash || receipt.roleId !== input.role.role_id || receipt.roleKind !== input.role.role_kind || receipt.sessionId !== input.sessionId || receipt.permissionPresetId !== input.role.dsh_preset || receipt.provider !== input.role.model_route.provider || receipt.model !== input.role.model_route.model || receipt.cwd !== sessionSpec.cwd) conflict("RoleBindingReceipt does not match CURRENT role identity");
+	if (input.binding.path !== expectedBindingPath || input.binding.hash !== receipt.receiptHash || receipt.labId !== manifest.lab_id || !manifestHashCommitted || receipt.roleId !== input.role.role_id || receipt.roleKind !== input.role.role_kind || receipt.sessionId !== input.sessionId || receipt.permissionPresetId !== input.role.dsh_preset || receipt.provider !== input.role.model_route.provider || receipt.model !== input.role.model_route.model || receipt.cwd !== sessionSpec.cwd) conflict("RoleBindingReceipt does not match CURRENT role identity");
 }
-function assertPacketIdentity(input, packet) {
+async function assertPacketIdentity(input, packet) {
 	const manifest = input.frozen.manifest;
 	const laneId$2 = "lane_id" in input.role ? input.role.lane_id : null;
 	const anchor = packet.anchors;
-	if (packet.header.lab_id !== manifest.lab_id || packet.header.lane_id !== laneId$2 || packet.header.role_id !== input.role.role_id || packet.header.role_kind !== input.role.role_kind || packet.header.session_id !== input.sessionId || packet.header.issued_at < input.binding.receipt.issuedAt || anchor.source_revision !== input.frozen.ref.revision || anchor.dialogue_head_sha256 !== input.frozen.ref.dialogueHeadHash || anchor.lab_spec_sha256 !== input.frozen.ref.specHash || anchor.lab_yaml_sha256 !== input.frozen.ref.configHash || anchor.resolved_manifest_sha256 !== input.frozen.ref.manifestHash || anchor.campaign_contract_sha256 !== manifest.campaign_contract_sha256 || anchor.role_binding_receipt_sha256 !== input.binding.hash || anchor.runtime_revision < input.binding.receipt.runtimeRevision || anchor.runtime_revision > input.runtimeRevision) conflict("Role Packet identity or immutable anchors do not match RuntimeState");
+	const packetRevision = await readRevisionAtPath(manifest.authority_paths.lab_dir, anchor.source_revision, input.frozen);
+	if (packet.header.lab_id !== manifest.lab_id || packet.header.lane_id !== laneId$2 || packet.header.role_id !== input.role.role_id || packet.header.role_kind !== input.role.role_kind || packet.header.session_id !== input.sessionId || packet.header.issued_at < input.binding.receipt.issuedAt || anchor.source_revision > input.frozen.ref.revision || anchor.dialogue_head_sha256 !== packetRevision.ref.dialogueHeadHash || anchor.lab_spec_sha256 !== packetRevision.ref.specHash || anchor.lab_yaml_sha256 !== packetRevision.ref.configHash || anchor.resolved_manifest_sha256 !== packetRevision.ref.manifestHash || anchor.campaign_contract_sha256 !== packetRevision.manifest.campaign_contract_sha256 || anchor.role_binding_receipt_sha256 !== input.binding.hash || anchor.runtime_revision < input.binding.receipt.runtimeRevision || anchor.runtime_revision > input.runtimeRevision) conflict("Role Packet identity or immutable anchors do not match RuntimeState");
 }
 function parseCanonicalAssignment(text) {
 	let value;
@@ -7667,7 +7765,7 @@ function isWithin(root, path) {
 	const child = relative(root, path);
 	return child.length > 0 && child !== ".." && !child.startsWith(`..${sep}`) && !isAbsolute(child);
 }
-async function readRequiredText(path, label) {
+async function readRequiredText$1(path, label) {
 	try {
 		return await readFile(path, "utf8");
 	} catch {
@@ -8499,7 +8597,7 @@ var CommunicationAclError = class extends Error {
 function compileCommunicationAcl(input) {
 	const manifest = parseResolvedManifest(input.manifest);
 	const manifestHash = hashResolvedManifest(manifest);
-	const sessions = indexRoleSessions(manifest, manifestHash, input.roleSessions, input.allowPartial === true);
+	const sessions = indexRoleSessions(manifest, manifestHash, input.roleSessions, input.allowPartial === true, input.authorizedManifestHashes);
 	const permissions = new Map(manifest.communication.role_permissions.map((permission) => [permission.role_id, permission]));
 	const roles = [...manifest.roles].sort((left, right) => left.role_id.localeCompare(right.role_id)).flatMap((role) => {
 		const session = sessions.get(role.role_id);
@@ -8543,7 +8641,13 @@ function compileCommunicationAcl(input) {
 */
 async function reconcileCommunicationAcl(input) {
 	input.signal?.throwIfAborted();
-	const plan = compileCommunicationAcl(input);
+	const plan = compileCommunicationAcl({
+		manifest: input.manifest,
+		revealState: input.revealState,
+		roleSessions: input.roleSessions,
+		...input.allowPartial === true ? { allowPartial: true } : {},
+		...input.authorizedManifestHashes === void 0 ? {} : { authorizedManifestHashes: input.authorizedManifestHashes }
+	});
 	const quarantine = indexQuarantineSessions(input, plan);
 	const managedRoles = input.controllerOffline === true ? plan.roles.filter((role) => role.roleKind !== "controller") : plan.roles;
 	let observations;
@@ -8648,7 +8752,7 @@ async function reconcileCommunicationAcl(input) {
 		textPairUpdates
 	};
 }
-function indexRoleSessions(manifest, manifestHash, values, allowPartial) {
+function indexRoleSessions(manifest, manifestHash, values, allowPartial, authorizedManifestHashes) {
 	const sessions = /* @__PURE__ */ new Map();
 	const sessionOwners = /* @__PURE__ */ new Map();
 	for (const value of values) {
@@ -8675,7 +8779,8 @@ function indexRoleSessions(manifest, manifestHash, values, allowPartial) {
 		const binding = value.binding;
 		if (binding === void 0) throw bindingMismatch(`role ${JSON.stringify(role.role_id)} has no frozen RoleBindingReceipt`);
 		const receipt = binding.receipt;
-		if (binding.hash !== receipt.receiptHash || receipt.labId !== manifest.lab_id || receipt.manifestHash !== manifestHash || receipt.roleId !== role.role_id || receipt.roleKind !== role.role_kind || receipt.sessionId !== sessionId) throw bindingMismatch(`frozen RoleBindingReceipt does not authorize role ${JSON.stringify(role.role_id)} on Session ${JSON.stringify(sessionId)}`);
+		const manifestHashAuthorized = receipt.manifestHash === manifestHash || authorizedManifestHashes?.has(receipt.manifestHash) === true;
+		if (binding.hash !== receipt.receiptHash || receipt.labId !== manifest.lab_id || !manifestHashAuthorized || receipt.roleId !== role.role_id || receipt.roleKind !== role.role_kind || receipt.sessionId !== sessionId) throw bindingMismatch(`frozen RoleBindingReceipt does not authorize role ${JSON.stringify(role.role_id)} on Session ${JSON.stringify(sessionId)}`);
 	}
 	for (const roleId of sessions.keys()) if (!manifest.roles.some((role) => role.role_id === roleId)) throw bindingMismatch(`communication binding references unknown role ${JSON.stringify(roleId)}`);
 	return sessions;
@@ -9468,7 +9573,7 @@ async function resolveJudge$1(input) {
 	const role = manifest.roles.find((candidate) => candidate.role_id === receipt.roleId);
 	if (role?.role_kind !== "postflight_judge") throw new PostflightArtifactError("target role is not a CURRENT Postflight Judge", "JUDGE_BINDING_MISMATCH");
 	const sessionSpec = resolveRootRoleSessionSpec(manifest, role.role_id);
-	if (stored === void 0 || stored.path !== input.judgeBinding.path || stored.hash !== input.judgeBinding.hash || canonicalJson$1(stored.receipt) !== canonicalJson$1(receipt) || receipt.receiptHash !== input.judgeBinding.hash || receipt.labId !== manifest.lab_id || receipt.manifestHash !== input.frozen.ref.manifestHash || receipt.roleId !== role.role_id || receipt.roleKind !== "postflight_judge" || receipt.sessionId !== input.judgeSessionId || receipt.permissionPresetId !== role.dsh_preset || receipt.provider !== role.model_route.provider || receipt.model !== role.model_route.model || receipt.cwd !== sessionSpec.cwd || receipt.runtimeRevision > input.runtimeRevision) throw new PostflightArtifactError("Postflight Judge Session does not match its frozen binding and CURRENT", "JUDGE_BINDING_MISMATCH");
+	if (stored === void 0 || stored.path !== input.judgeBinding.path || stored.hash !== input.judgeBinding.hash || canonicalJson$1(stored.receipt) !== canonicalJson$1(receipt) || receipt.receiptHash !== input.judgeBinding.hash || receipt.labId !== manifest.lab_id || !await isCommittedManifestHash(manifest.authority_paths.lab_dir, receipt.manifestHash) || receipt.roleId !== role.role_id || receipt.roleKind !== "postflight_judge" || receipt.sessionId !== input.judgeSessionId || receipt.permissionPresetId !== role.dsh_preset || receipt.provider !== role.model_route.provider || receipt.model !== role.model_route.model || receipt.cwd !== sessionSpec.cwd || receipt.runtimeRevision > input.runtimeRevision) throw new PostflightArtifactError("Postflight Judge Session does not match its frozen binding and CURRENT", "JUDGE_BINDING_MISMATCH");
 	const lane = manifest.lanes.find((candidate) => candidate.lane_id === role.lane_id && candidate.postflight_judge_role_id === role.role_id);
 	const charter = manifest.search.lane_charters.find((candidate) => candidate.lane_id === role.lane_id);
 	if (lane === void 0 || charter === void 0) throw new PostflightArtifactError("Postflight Judge does not resolve to one CURRENT Lane", "JUDGE_BINDING_MISMATCH");
@@ -9497,7 +9602,8 @@ async function readCurrentCoderPacket(input, laneId$2, coderRoleId) {
 	}
 	const manifest = input.frozen.manifest;
 	const expectedPath = join(manifest.authority_paths.lab_dir, "packets", sha256(packet.header.assignment_id), `${sha256(coderRoleId)}.json`);
-	if (canonicalJson$1(packet) !== text || input.currentCoderPacket.path !== expectedPath || packet.header.lab_id !== manifest.lab_id || packet.header.lane_id !== laneId$2 || packet.header.role_id !== coderRoleId || packet.header.role_kind !== "coder" || packet.anchors.source_revision !== input.frozen.ref.revision || packet.anchors.dialogue_head_sha256 !== input.frozen.ref.dialogueHeadHash || packet.anchors.lab_spec_sha256 !== input.frozen.ref.specHash || packet.anchors.lab_yaml_sha256 !== input.frozen.ref.configHash || packet.anchors.resolved_manifest_sha256 !== input.frozen.ref.manifestHash || packet.anchors.campaign_contract_sha256 !== manifest.campaign_contract_sha256 || packet.anchors.runtime_revision > input.runtimeRevision) throw new PostflightArtifactError("current Coder Packet does not bind this CURRENT Lane", "CODER_PACKET_MISMATCH");
+	const packetRevision = await readRevisionAtPath(manifest.authority_paths.lab_dir, packet.anchors.source_revision, input.frozen);
+	if (canonicalJson$1(packet) !== text || input.currentCoderPacket.path !== expectedPath || packet.header.lab_id !== manifest.lab_id || packet.header.lane_id !== laneId$2 || packet.header.role_id !== coderRoleId || packet.header.role_kind !== "coder" || packet.anchors.source_revision > input.frozen.ref.revision || packet.anchors.dialogue_head_sha256 !== packetRevision.ref.dialogueHeadHash || packet.anchors.lab_spec_sha256 !== packetRevision.ref.specHash || packet.anchors.lab_yaml_sha256 !== packetRevision.ref.configHash || packet.anchors.resolved_manifest_sha256 !== packetRevision.ref.manifestHash || packet.anchors.campaign_contract_sha256 !== packetRevision.manifest.campaign_contract_sha256 || packet.anchors.runtime_revision > input.runtimeRevision) throw new PostflightArtifactError("current Coder Packet does not bind this CURRENT Lane", "CODER_PACKET_MISMATCH");
 	return packet;
 }
 async function assertExactAuthority(path, expected) {
@@ -9643,7 +9749,7 @@ async function freezePreflightReviewArtifacts(input) {
 	}, "CURRENT ResolvedManifest", canonicalJson$1(manifest));
 	const judge = await resolveJudge(input);
 	const sourcePacket = await readSourceMethodPacket(input.sourceMethodPacket);
-	assertSourceMethodPacket(sourcePacket, input.sourceMethodAssignment, input.frozen, judge.laneId, judge.methodRoleId);
+	await assertSourceMethodPacket(sourcePacket, input.sourceMethodAssignment, input.frozen, judge.laneId, judge.methodRoleId);
 	await assertExactInput(input.sourceMethodAssignment, "source Method Assignment");
 	await assertExactInput(input.designTicket, "Design Ticket");
 	const prompt = rolePromptFor("preflight_judge");
@@ -9789,7 +9895,7 @@ function assertFrozenRevision(frozen) {
 async function resolveJudge(input) {
 	const receipt = input.judgeBinding.receipt;
 	const stored = await readRoleBinding(input.frozen.manifest.authority_paths.lab_dir, receipt.roleId);
-	if (stored === void 0 || stored.path !== input.judgeBinding.path || stored.hash !== input.judgeBinding.hash || canonicalJson$1(stored.receipt) !== canonicalJson$1(receipt) || receipt.receiptHash !== input.judgeBinding.hash || receipt.labId !== input.frozen.manifest.lab_id || receipt.manifestHash !== input.frozen.ref.manifestHash || receipt.roleKind !== "preflight_judge" || receipt.sessionId !== input.judgeSessionId) throw new PreflightReviewArtifactError("Judge Session does not match its frozen RoleBindingReceipt and CURRENT", "JUDGE_BINDING_MISMATCH");
+	if (stored === void 0 || stored.path !== input.judgeBinding.path || stored.hash !== input.judgeBinding.hash || canonicalJson$1(stored.receipt) !== canonicalJson$1(receipt) || receipt.receiptHash !== input.judgeBinding.hash || receipt.labId !== input.frozen.manifest.lab_id || !await isCommittedManifestHash(input.frozen.manifest.authority_paths.lab_dir, receipt.manifestHash) || receipt.roleKind !== "preflight_judge" || receipt.sessionId !== input.judgeSessionId) throw new PreflightReviewArtifactError("Judge Session does not match its frozen RoleBindingReceipt and CURRENT", "JUDGE_BINDING_MISMATCH");
 	const role = input.frozen.manifest.roles.find((candidate) => candidate.role_id === receipt.roleId);
 	if (role?.role_kind !== "preflight_judge") throw new PreflightReviewArtifactError("Judge role is not a Preflight Judge", "JUDGE_BINDING_MISMATCH");
 	const sessionSpec = resolveRootRoleSessionSpec(input.frozen.manifest, role.role_id);
@@ -9821,8 +9927,9 @@ async function readSourceMethodPacket(reference) {
 	if (sha256(canonicalJson$1(packet)) !== reference.sha256) throw new PreflightReviewArtifactError("source Method Packet is not the exact canonical frozen packet", "SOURCE_PACKET_MISMATCH");
 	return packet;
 }
-function assertSourceMethodPacket(packet, sourceAssignment, frozen, laneId$2, methodRoleId) {
-	if (packet.header.lab_id !== frozen.manifest.lab_id || packet.header.lane_id !== laneId$2 || packet.header.role_id !== methodRoleId || packet.header.role_kind !== "method" || packet.anchors.source_revision !== frozen.ref.revision || packet.anchors.dialogue_head_sha256 !== frozen.ref.dialogueHeadHash || packet.anchors.lab_spec_sha256 !== frozen.ref.specHash || packet.anchors.lab_yaml_sha256 !== frozen.ref.configHash || packet.anchors.resolved_manifest_sha256 !== frozen.ref.manifestHash || packet.anchors.assignment_contract_sha256 !== sourceAssignment.sha256) throw new PreflightReviewArtifactError("source Method Packet does not bind this CURRENT Lane and Assignment", "SOURCE_PACKET_MISMATCH");
+async function assertSourceMethodPacket(packet, sourceAssignment, frozen, laneId$2, methodRoleId) {
+	const packetRevision = await readRevisionAtPath(frozen.manifest.authority_paths.lab_dir, packet.anchors.source_revision, frozen);
+	if (packet.header.lab_id !== frozen.manifest.lab_id || packet.header.lane_id !== laneId$2 || packet.header.role_id !== methodRoleId || packet.header.role_kind !== "method" || packet.anchors.source_revision > frozen.ref.revision || packet.anchors.dialogue_head_sha256 !== packetRevision.ref.dialogueHeadHash || packet.anchors.lab_spec_sha256 !== packetRevision.ref.specHash || packet.anchors.lab_yaml_sha256 !== packetRevision.ref.configHash || packet.anchors.resolved_manifest_sha256 !== packetRevision.ref.manifestHash || packet.anchors.assignment_contract_sha256 !== sourceAssignment.sha256) throw new PreflightReviewArtifactError("source Method Packet does not bind this CURRENT Lane and Assignment", "SOURCE_PACKET_MISMATCH");
 }
 function artifactRef(artifactId, reference) {
 	return {
@@ -9976,18 +10083,42 @@ async function freezeMethodAssignment(input) {
 }
 async function freezeControllerAssignment(input, flavor) {
 	await assertStoredBinding(input);
-	const current = await restoreCurrentRoleArtifacts({
-		frozen: input.frozen,
-		role: input.role,
-		sessionId: input.sessionId,
-		binding: input.binding,
-		runtimeRevision: input.runtimeRevision,
-		packetRef: input.currentPacket
-	});
-	if (input.runtimeRevision < current.packet.packet.anchors.runtime_revision) throw new RoleAssignmentError("new Assignment runtime revision precedes the current Role Packet", "INVALID_INPUT");
+	let current;
+	try {
+		current = await restoreCurrentRoleArtifacts({
+			frozen: input.frozen,
+			role: input.role,
+			sessionId: input.sessionId,
+			binding: input.binding,
+			runtimeRevision: input.runtimeRevision,
+			packetRef: input.currentPacket
+		});
+	} catch (error) {
+		if (!(error instanceof ActivationArtifactError) || error.message !== "Role Packet does not carry its own exact LAB_SPEC block") throw error;
+		current = void 0;
+	}
+	if (current !== void 0 && input.runtimeRevision < current.packet.packet.anchors.runtime_revision) throw new RoleAssignmentError("new Assignment runtime revision precedes the current Role Packet", "INVALID_INPUT");
 	const manifest = input.frozen.manifest;
 	const roleKey = sha256(input.role.role_id);
 	const assignmentKey = sha256(input.assignmentId);
+	const prompt = rolePromptFor(input.role.role_kind);
+	const promptPath = join(manifest.authority_paths.lab_dir, "artifacts", "builtins", `${prompt.sha256}.txt`);
+	await freezeNoClobber(promptPath, prompt.text, "ARTIFACT_CONFLICT");
+	const laneId$2 = "lane_id" in input.role ? input.role.lane_id : void 0;
+	const lane = laneId$2 === void 0 ? void 0 : manifest.search.lane_charters.find((charter) => charter.lane_id === laneId$2);
+	let laneBlock;
+	if (lane !== void 0) {
+		const laneText = canonicalJson$1(lane.content);
+		if (sha256(laneText) !== lane.charter_sha256) throw new RoleAssignmentError(`LaneCharter bytes do not match CURRENT ResolvedManifest for ${input.role.role_id}`, "ARTIFACT_CONFLICT");
+		const lanePath = join(manifest.authority_paths.lab_dir, "artifacts", "lanes", `${sha256(lane.lane_id)}.charter.json`);
+		await freezeNoClobber(lanePath, laneText, "ARTIFACT_CONFLICT");
+		laneBlock = {
+			block_id: "lane-charter",
+			source_path: lanePath,
+			exact_text: laneText,
+			text_sha256: lane.charter_sha256
+		};
+	}
 	const assignmentPath = join(manifest.authority_paths.assignment_root, "roles", roleKey, `${assignmentKey}.json`);
 	const receiptPath$1 = join(manifest.authority_paths.assignment_root, "outputs", roleKey, `${assignmentKey}.json`);
 	const outputContract = {
@@ -10014,14 +10145,24 @@ async function freezeControllerAssignment(input, flavor) {
 			role_binding_receipt_sha256: input.binding.hash,
 			runtime_revision: input.runtimeRevision,
 			fact_set_sha256: factAnchor.factSetSha256,
-			evidence_index_sha256: current.packet.packet.anchors.evidence_index_sha256,
+			evidence_index_sha256: current === void 0 ? sha256(await readRequiredText(manifest.authority_paths.evidence_index, "Evidence index")) : current.packet.packet.anchors.evidence_index_sha256,
 			assignment_contract_sha256: assignmentHash,
-			reveal_state: input.currentRevealState ?? current.packet.packet.runtime_snapshot.reveal_state,
+			reveal_state: input.currentRevealState ?? (current === void 0 ? manifest.communication.reveal_policy.initial_state : current.packet.packet.runtime_snapshot.reveal_state),
 			verbatim_blocks: {
-				universal: current.packet.packet.verbatim_blocks.universal,
-				role: current.packet.packet.verbatim_blocks.role,
-				lane: current.packet.packet.verbatim_blocks.lane,
-				stage: current.packet.packet.verbatim_blocks.stage,
+				universal: [{
+					block_id: "lab-spec",
+					source_path: manifest.authority_paths.lab_spec,
+					exact_text: input.frozen.spec,
+					text_sha256: input.frozen.ref.specHash
+				}],
+				role: [{
+					block_id: "role-prompt",
+					source_path: promptPath,
+					exact_text: prompt.text,
+					text_sha256: prompt.sha256
+				}],
+				lane: laneBlock === void 0 ? [] : [laneBlock],
+				stage: current === void 0 ? [] : current.packet.packet.verbatim_blocks.stage,
 				assignment: [{
 					block_id: flavor.blockId,
 					source_path: assignmentPath,
@@ -10029,10 +10170,10 @@ async function freezeControllerAssignment(input, flavor) {
 					text_sha256: assignmentHash
 				}]
 			},
-			...current.packet.packet.runtime_snapshot.incumbent === void 0 ? {} : { incumbent: current.packet.packet.runtime_snapshot.incumbent },
-			relevant_fact_refs: [...current.packet.packet.runtime_snapshot.relevant_fact_refs.filter((ref) => ref.id !== "fact-set"), ...factAnchor.relevantFactRefs],
-			evidence_refs: current.packet.packet.runtime_snapshot.evidence_refs,
-			open_obligation_refs: current.packet.packet.runtime_snapshot.open_obligation_refs,
+			...current === void 0 || current.packet.packet.runtime_snapshot.incumbent === void 0 ? {} : { incumbent: current.packet.packet.runtime_snapshot.incumbent },
+			relevant_fact_refs: [...current === void 0 ? [] : current.packet.packet.runtime_snapshot.relevant_fact_refs.filter((ref) => ref.id !== "fact-set"), ...factAnchor.relevantFactRefs],
+			evidence_refs: current === void 0 ? [] : current.packet.packet.runtime_snapshot.evidence_refs,
+			open_obligation_refs: current === void 0 ? [] : current.packet.packet.runtime_snapshot.open_obligation_refs,
 			input_artifact_refs: input.inputArtifactRefs.map((reference) => ({ ...reference })),
 			output_contract: outputContract
 		});
@@ -10228,6 +10369,19 @@ async function readPacket(path) {
 async function freezeText(path, text) {
 	await freezeNoClobber(path, text, "ARTIFACT_CONFLICT");
 	return sha256(text);
+}
+async function readRequiredText(path, label) {
+	let bytes;
+	try {
+		bytes = await readFile(path);
+	} catch (error) {
+		throw new RoleAssignmentError(`${label} cannot be read at ${path}: ${errorMessage(error)}`, "PACKET_READ_FAILED");
+	}
+	try {
+		return UTF8.decode(bytes);
+	} catch (error) {
+		throw new RoleAssignmentError(`${label} at ${path} is not UTF-8: ${errorMessage(error)}`, "PACKET_READ_FAILED");
+	}
 }
 async function freezeBytes(path, bytes) {
 	await freezeNoClobber(path, bytes, "RECEIPT_CONFLICT");
@@ -10514,4 +10668,4 @@ async function flushSessionDurably(ctx, session, label) {
 }
 
 //#endregion
-export { stageApprovedCoderActivation as $, LAB_ID_PATTERN as $n, trialContractSchema as $r, compileCoderImplementationReceipt as $t, compileCommunicationAcl as A, localAttemptRequestPath as An, artifactReferenceSchema$1 as Ar, freezePreflightVerdict as At, WorktreeError as B, nodeLocalTmuxPlatform as Bn, componentIdentitySchema as Br, PacketValidationError as Bt, processStartId as C, AttemptArtifactError as Cn, rolePhaseSchema as Cr, ROLE_KERNEL_ORDER as Ct, parseDraftLabYaml as D, freezeRetryLocalAttempt as Dn, validateLabId as Dr, roleKernelFor as Dt, parseDraftLabConfig as E, freezeInitialLocalAttempt as En, transitionRuntimeState as Er, resolveRootRoleSessionSpec as Et, candidateFrozenReportPath as F, adoptLocalTmuxAttempt as Fn, compileAttemptCompletionReceipt as Fr, MethodTicketError as Ft, freezeInitialRoleArtifacts as G, generateLabId as Gn, parseRunSlotState as Gr, verbatimBlockSchema as Gt, provisionLaneWorktree as H, ArtifactError as Hn, createRetryAttempt as Hr, hashRolePacket as Ht, candidateReceiptPath as I, compileLocalTmuxLaunch as In, compileAttemptStartedReceipt as Ir, freezeMethodDesignTicket as It, applyApprovedCoderGoal as J, parseResolvedManifest as Jn, recordAttemptCompletion as Jr, CoderReceiptError as Jt, restoreCurrentRoleArtifacts as K, ManifestValidationError as Kn, parseTrialContract as Kr, currentFactAnchor as Kt, freezeLaneCandidate as L, createSubprocessLocalTmuxPlatform as Ln, compileAttemptUncertainReceipt as Lr, methodDesignTicketOutputSchema as Lt, CoderSubmissionError as M, readAttemptUncertainReceiptArtifactIfPresent as Mn, attemptSchema as Mr, parsePreflightVerdict as Mt, freezeApprovedCoderSubmission as N, readLocalAttemptIntent as Nn, attemptStartedReceiptSchema as Nr, parsePreflightVerdictArtifact as Nt, resolveDraftLabConfig as O, localAttemptCheckoutPath as On, AttemptTransitionError as Or, rolePromptFor as Ot, CandidateSnapshotError as P, verifyInitialLocalAttempt as Pn, attemptUncertainReceiptSchema as Pr, METHOD_TICKET_HASH_BINDING as Pt, resolveApprovedCoderReview as Q, CONTROL_PAYLOAD_HASH_PATTERN as Qn, runSlotStateSchema as Qr, coderImplementationReportSchema as Qt, readCandidateChangedPaths as R, inspectLocalTmuxAttempt as Rn, compileRunSlotContract as Rr, methodDesignTicketSchema as Rt, acquireRuntimeLock as S, reconcileLocalTmuxInspection as Sn, roleActivationBlockerSchema as Sr, AutoLabRoleError as St, draftLabConfigSchema as T, freezeAttemptStateArtifact as Tn, runtimeStateSchema as Tr, ROLE_KERNEL_VERSION as Tt, resolveRepositoryRefs as U, ArtifactStore as Un, createRunSlotState as Ur, parseRolePacket as Ut, inspectLaneWorktree as V, resolveLocalAttemptWrapperPath as Vn, createInitialAttempt as Vr, compileRolePacket as Vt, ActivationArtifactError as W, durableWriteFile as Wn, parseAttempt as Wr, rolePacketSchema as Wt, freezeApprovedCoderActivation as X, roleBindingSchema as Xn, recordAttemptStarted as Xr, coderImplementationReceiptSchema as Xt, compileApprovedCoderActivation as Y, resolvedManifestSchema as Yn, recordAttemptOutcomeUnknown as Yr, coderImplementationReceiptOutputSchema as Yt, installApprovedCoderGoal as Z, AutoLabStateError as Zn, runSlotContractSchema as Zr, coderImplementationReportOutputSchema as Zt, PostflightResultError as _, provisionDetachedRunCheckout as _n, reviewPauseStateSchema as _r, observeOpenAgentTurn as _t, resumeRootRoleSession as a, readCoderImplementationReport as an, adoptRuntimeOwner as ar, compileReviewResolution as at, freezePostflightReviewArtifacts as b, AttemptRuntimeConsumer as bn, reviewResultStateSchema as br, ApprovedCoderArtifactError as bt, RoleAssignmentError as c, readRoleBinding as cn, controllerGoalSchema as cr, registerReviewControlHandlers as ct, assertRoleAssignmentReplay as d, prepareRetryLocalAttempt as dn, labLifecycleSchema as dr, reviewRequestPayload as dt, DurableApiRecoveryStore as ei, freezeCoderImplementationReceipt as en, ReviewResolutionError as er, REVIEW_ACCEPTED_PAUSE as et, freezeMethodAssignment as f, verifyRetryLocalAttemptReplay as fn, parseState as fr, sendReviewRequest as ft, freezePreflightReviewArtifacts as g, inspectDetachedRunCheckout as gn, reviewFreezeComplete as gr, installLocalGoal as gt, PreflightReviewArtifactError as h, RunCheckoutError as hn, reviewCapabilityStateSchema as hr, compileLocalGoalIntent as ht, createRootRoleSession as i, readCoderImplementationReceipt as in, activeTrialSchema as ir, compileReviewControlCapability as it, reconcileCommunicationAcl as j, localAttemptRequestSchema as jn, attemptCompletionReceiptSchema as jr, freezePreflightVerdictArtifact as jt, CommunicationAclError as k, localAttemptDirectory as kn, TrialContractError as kr, PreflightVerdictError as kt, assertMethodAssignmentReplay as l, AttemptLaunchError as ln, createRuntimeState as lr, reviewAcceptedPausePayload as lt, freezeRoleAssignmentReceipt as m, freezeTrialArtifacts as mn, resolutionHash as mr, acquireLocalReviewHold as mt, flushSessionDurably as n, sha256 as ni, parseCoderImplementationReceipt as nn, activeCandidateSchema as nr, REVIEW_REQUEST as nt, verifyBorrowedRootRoleSession as o, RoleBindingError as on, autolabDomainSpec as or, createReviewControlHandlers as ot, freezeRoleAssignment as p, TrialArtifactError as pn, recordReviewResolution as pr, LocalGoalError as pt, ApprovedCoderActivationError as q, hashResolvedManifest as qn, receiptReferenceSchema as qr, registerFact as qt, AutoLabRoleSessionError as r, parseCoderImplementationReport as rn, activeReviewSchema as rr, ReviewProtocolError as rt, METHOD_SOURCE_PREFLIGHT_VERDICT_ARTIFACT_ID as s, freezeRoleBinding as sn, configRefSchema as sr, pauseExpectedReviewGoal as st, SessionDurabilityError as t, canonicalJson$1 as ti, freezeCompiledCoderImplementationReceipt as tn, SHA256_PATTERN$17 as tr, REVIEW_ACCEPTED_TEXT as tt, assertRoleAssignmentMayDispatch as u, prepareInitialLocalAttempt as un, goalInstallSchema as ur, reviewJudgeStart as ut, freezePostflightResult as v, runCheckoutReceiptPath as vn, reviewReadyToAdvance as vr, pauseLocalGoal as vt, LabConfigError as w, freezeAttemptReceiptArtifact as wn, roleStateSchema as wr, ROLE_KERNEL_SECTION as wt, RuntimeLockError as x, LocalAttemptReconcileError as xn, reviewVerdictStateSchema as xr, freezeApprovedCoderArtifacts as xt, PostflightArtifactError as y, runCheckoutReceiptSchema as yn, reviewResolutionStateSchema as yr, pauseLocalGoalContinuation as yt, readCandidateSnapshotReceipt as z, launchLocalTmuxAttempt as zn, compileTrialContract as zr, parseMethodDesignTicket as zt };
+export { stageApprovedCoderActivation as $, roleBindingSchema as $n, recordAttemptStarted as $r, compileCoderImplementationReceipt as $t, compileCommunicationAcl as A, localAttemptRequestPath as An, validateLabId as Ar, freezePreflightVerdict as At, WorktreeError as B, nodeLocalTmuxPlatform as Bn, compileAttemptUncertainReceipt as Br, PacketValidationError as Bt, processStartId as C, AttemptArtifactError as Cn, reviewResultStateSchema as Cr, ROLE_KERNEL_ORDER as Ct, parseDraftLabYaml as D, freezeRetryLocalAttempt as Dn, roleStateSchema as Dr, roleKernelFor as Dt, parseDraftLabConfig as E, freezeInitialLocalAttempt as En, rolePhaseSchema as Er, resolveRootRoleSessionSpec as Et, candidateFrozenReportPath as F, adoptLocalTmuxAttempt as Fn, attemptSchema as Fr, MethodTicketError as Ft, freezeInitialRoleArtifacts as G, generateLabId as Gn, createRetryAttempt as Gr, verbatimBlockSchema as Gt, provisionLaneWorktree as H, ArtifactError as Hn, compileTrialContract as Hr, hashRolePacket as Ht, candidateReceiptPath as I, compileLocalTmuxLaunch as In, attemptStartedReceiptSchema as Ir, freezeMethodDesignTicket as It, applyApprovedCoderGoal as J, readRevisionAtPath as Jn, parseRunSlotState as Jr, CoderReceiptError as Jt, restoreCurrentRoleArtifacts as K, isCommittedManifestHash as Kn, createRunSlotState as Kr, currentFactAnchor as Kt, freezeLaneCandidate as L, createSubprocessLocalTmuxPlatform as Ln, attemptUncertainReceiptSchema as Lr, methodDesignTicketOutputSchema as Lt, CoderSubmissionError as M, readAttemptUncertainReceiptArtifactIfPresent as Mn, TrialContractError as Mr, parsePreflightVerdict as Mt, freezeApprovedCoderSubmission as N, readLocalAttemptIntent as Nn, artifactReferenceSchema$1 as Nr, parsePreflightVerdictArtifact as Nt, resolveDraftLabConfig as O, localAttemptCheckoutPath as On, runtimeStateSchema as Or, rolePromptFor as Ot, CandidateSnapshotError as P, verifyInitialLocalAttempt as Pn, attemptCompletionReceiptSchema as Pr, METHOD_TICKET_HASH_BINDING as Pt, resolveApprovedCoderReview as Q, resolvedManifestSchema as Qn, recordAttemptOutcomeUnknown as Qr, coderImplementationReportSchema as Qt, readCandidateChangedPaths as R, inspectLocalTmuxAttempt as Rn, compileAttemptCompletionReceipt as Rr, methodDesignTicketSchema as Rt, acquireRuntimeLock as S, reconcileLocalTmuxInspection as Sn, reviewResolutionStateSchema as Sr, AutoLabRoleError as St, draftLabConfigSchema as T, freezeAttemptStateArtifact as Tn, roleActivationBlockerSchema as Tr, ROLE_KERNEL_VERSION as Tt, resolveRepositoryRefs as U, ArtifactStore as Un, componentIdentitySchema as Ur, parseRolePacket as Ut, inspectLaneWorktree as V, resolveLocalAttemptWrapperPath as Vn, compileRunSlotContract as Vr, compileRolePacket as Vt, ActivationArtifactError as W, durableWriteFile as Wn, createInitialAttempt as Wr, rolePacketSchema as Wt, freezeApprovedCoderActivation as X, hashResolvedManifest as Xn, receiptReferenceSchema as Xr, coderImplementationReceiptSchema as Xt, compileApprovedCoderActivation as Y, ManifestValidationError as Yn, parseTrialContract as Yr, coderImplementationReceiptOutputSchema as Yt, installApprovedCoderGoal as Z, parseResolvedManifest as Zn, recordAttemptCompletion as Zr, coderImplementationReportOutputSchema as Zt, PostflightResultError as _, provisionDetachedRunCheckout as _n, resolutionHash as _r, observeOpenAgentTurn as _t, resumeRootRoleSession as a, sha256 as ai, readCoderImplementationReport as an, activeCandidateSchema as ar, compileReviewResolution as at, freezePostflightReviewArtifacts as b, AttemptRuntimeConsumer as bn, reviewPauseStateSchema as br, ApprovedCoderArtifactError as bt, RoleAssignmentError as c, readRoleBinding as cn, adoptRuntimeOwner as cr, registerReviewControlHandlers as ct, assertRoleAssignmentReplay as d, prepareRetryLocalAttempt as dn, controllerGoalSchema as dr, reviewRequestPayload as dt, runSlotContractSchema as ei, freezeCoderImplementationReceipt as en, AutoLabStateError as er, REVIEW_ACCEPTED_PAUSE as et, freezeMethodAssignment as f, verifyRetryLocalAttemptReplay as fn, createRuntimeState as fr, sendReviewRequest as ft, freezePreflightReviewArtifacts as g, inspectDetachedRunCheckout as gn, recordReviewResolution as gr, installLocalGoal as gt, PreflightReviewArtifactError as h, RunCheckoutError as hn, parseState as hr, compileLocalGoalIntent as ht, createRootRoleSession as i, canonicalJson$1 as ii, readCoderImplementationReceipt as in, SHA256_PATTERN$17 as ir, compileReviewControlCapability as it, reconcileCommunicationAcl as j, localAttemptRequestSchema as jn, AttemptTransitionError as jr, freezePreflightVerdictArtifact as jt, CommunicationAclError as k, localAttemptDirectory as kn, transitionRuntimeState as kr, PreflightVerdictError as kt, assertMethodAssignmentReplay as l, AttemptLaunchError as ln, autolabDomainSpec as lr, reviewAcceptedPausePayload as lt, freezeRoleAssignmentReceipt as m, freezeTrialArtifacts as mn, labLifecycleSchema as mr, acquireLocalReviewHold as mt, flushSessionDurably as n, trialContractSchema as ni, parseCoderImplementationReceipt as nn, LAB_ID_PATTERN as nr, REVIEW_REQUEST as nt, verifyBorrowedRootRoleSession as o, RoleBindingError as on, activeReviewSchema as or, createReviewControlHandlers as ot, freezeRoleAssignment as p, TrialArtifactError as pn, goalInstallSchema as pr, LocalGoalError as pt, ApprovedCoderActivationError as q, listCommittedManifestHashes as qn, parseAttempt as qr, registerFact as qt, AutoLabRoleSessionError as r, DurableApiRecoveryStore as ri, parseCoderImplementationReport as rn, ReviewResolutionError as rr, ReviewProtocolError as rt, METHOD_SOURCE_PREFLIGHT_VERDICT_ARTIFACT_ID as s, freezeRoleBinding as sn, activeTrialSchema as sr, pauseExpectedReviewGoal as st, SessionDurabilityError as t, runSlotStateSchema as ti, freezeCompiledCoderImplementationReceipt as tn, CONTROL_PAYLOAD_HASH_PATTERN as tr, REVIEW_ACCEPTED_TEXT as tt, assertRoleAssignmentMayDispatch as u, prepareInitialLocalAttempt as un, configRefSchema as ur, reviewJudgeStart as ut, freezePostflightResult as v, runCheckoutReceiptPath as vn, reviewCapabilityStateSchema as vr, pauseLocalGoal as vt, LabConfigError as w, freezeAttemptReceiptArtifact as wn, reviewVerdictStateSchema as wr, ROLE_KERNEL_SECTION as wt, RuntimeLockError as x, LocalAttemptReconcileError as xn, reviewReadyToAdvance as xr, freezeApprovedCoderArtifacts as xt, PostflightArtifactError as y, runCheckoutReceiptSchema as yn, reviewFreezeComplete as yr, pauseLocalGoalContinuation as yt, readCandidateSnapshotReceipt as z, launchLocalTmuxAttempt as zn, compileAttemptStartedReceipt as zr, parseMethodDesignTicket as zt };

@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import { isAbsolute, join, relative, sep } from 'node:path'
 
-import { durableWriteFile, type FrozenRevision } from './artifacts.js'
+import { durableWriteFile, isCommittedManifestHash, readRevisionAtPath, type FrozenRevision } from './artifacts.js'
 import type { StoredRoleBinding } from './binding.js'
 import { canonicalJson, sha256 } from './integrity.js'
 import {
@@ -214,7 +214,7 @@ export async function freezeInitialRoleArtifacts(input: {
 export async function restoreCurrentRoleArtifacts(
   input: RestoreCurrentRoleArtifactsInput,
 ): Promise<InitialRoleArtifacts> {
-  validateRestoreInput(input)
+  await validateRestoreInput(input)
   const manifest = input.frozen.manifest
   const packetText = await readRequiredText(input.packetRef.path, 'Role Packet')
   if (sha256(packetText) !== input.packetRef.hash) {
@@ -232,7 +232,7 @@ export async function restoreCurrentRoleArtifacts(
     conflict('Role Packet is not the exact canonical frozen packet')
   }
 
-  assertPacketIdentity(input, packet)
+  await assertPacketIdentity(input, packet)
   const expectedPacketPath = join(
     manifest.authority_paths.lab_dir,
     'packets',
@@ -243,10 +243,15 @@ export async function restoreCurrentRoleArtifacts(
     conflict('Role Packet path does not match its immutable identity')
   }
 
+  const packetRevision = await readRevisionAtPath(
+    manifest.authority_paths.lab_dir,
+    packet.anchors.source_revision,
+    input.frozen,
+  )
   let recompiled: CompiledRolePacket
   try {
     recompiled = compileRolePacket({
-      manifest,
+      manifest: packetRevision.manifest,
       role_id: packet.header.role_id,
       session_id: packet.header.session_id,
       assignment_id: packet.header.assignment_id,
@@ -275,12 +280,23 @@ export async function restoreCurrentRoleArtifacts(
   }
 
   const universal = packet.verbatim_blocks.universal.find(block => (
-    block.source_path === manifest.authority_paths.lab_spec
-    && block.text_sha256 === input.frozen.ref.specHash
-    && block.exact_text === input.frozen.spec
+    block.source_path === packetRevision.manifest.authority_paths.lab_spec
+    && block.text_sha256 === packet.anchors.lab_spec_sha256
+    && sha256(block.exact_text) === packet.anchors.lab_spec_sha256
   ))
   if (universal === undefined) {
-    conflict('Role Packet does not carry the exact CURRENT LAB_SPEC block')
+    // Narrow migration tolerance: a Packet compiled by an earlier plugin build
+    // (before the current-revision-block fix) may carry an internally
+    // consistent universal block that references an EARLIER committed
+    // revision's LAB_SPEC while its anchors declare its own revision. Such a
+    // Packet is only ever superseded by the next Assignment; activation
+    // tolerates it so that the superseding dispatch can proceed.
+    const tolerated = await isStaleUniversalBlockTolerable(
+      packet,
+      packetRevision,
+      manifest.authority_paths.lab_dir,
+    )
+    if (!tolerated) conflict('Role Packet does not carry its own exact LAB_SPEC block')
   }
 
   if (packet.verbatim_blocks.assignment.length !== 1) {
@@ -348,7 +364,36 @@ interface CanonicalAssignment {
   readonly [key: string]: unknown
 }
 
-function validateRestoreInput(input: RestoreCurrentRoleArtifactsInput): void {
+/**
+ * True when the packet's universal block is the exact known-buggy pattern: a
+ * single, internally consistent block whose bytes are an EARLIER committed
+ * revision's exact LAB_SPEC (path + hash + text all match), while the
+ * packet's anchors declare its own revision, and the packet carries no review
+ * lineage. Such packets were frozen by an earlier plugin build and are only
+ * superseded by the next Assignment; activation tolerates them so the
+ * superseding dispatch can proceed.
+ */
+async function isStaleUniversalBlockTolerable(
+  packet: RolePacket,
+  packetRevision: FrozenRevision,
+  labDirectory: string,
+): Promise<boolean> {
+  if (packet.runtime_snapshot.incumbent !== undefined) return false
+  const blocks = packet.verbatim_blocks.universal
+  if (blocks.length !== 1) return false
+  const block = blocks[0]!
+  if (sha256(block.exact_text) !== block.text_sha256) return false
+  for (let revision = 1; revision < packetRevision.ref.revision; revision += 1) {
+    const earlier = await readRevisionAtPath(labDirectory, revision, packetRevision)
+    if (block.source_path !== earlier.manifest.authority_paths.lab_spec) continue
+    if (block.text_sha256 !== earlier.ref.specHash) continue
+    if (block.exact_text !== earlier.spec) continue
+    return true
+  }
+  return false
+}
+
+async function validateRestoreInput(input: RestoreCurrentRoleArtifactsInput): Promise<void> {
   const manifest = input.frozen.manifest
   const currentRole = manifest.roles.find(candidate => candidate.role_id === input.role.role_id)
   if (currentRole === undefined
@@ -378,6 +423,10 @@ function validateRestoreInput(input: RestoreCurrentRoleArtifactsInput): void {
   }
 
   const receipt = input.binding.receipt
+  const manifestHashCommitted = await isCommittedManifestHash(
+    manifest.authority_paths.lab_dir,
+    receipt.manifestHash,
+  )
   const sessionSpec = resolveRootRoleSessionSpec(manifest, input.role.role_id)
   const expectedBindingPath = join(
     manifest.authority_paths.lab_dir,
@@ -388,7 +437,7 @@ function validateRestoreInput(input: RestoreCurrentRoleArtifactsInput): void {
   if (input.binding.path !== expectedBindingPath
     || input.binding.hash !== receipt.receiptHash
     || receipt.labId !== manifest.lab_id
-    || receipt.manifestHash !== input.frozen.ref.manifestHash
+    || !manifestHashCommitted
     || receipt.roleId !== input.role.role_id
     || receipt.roleKind !== input.role.role_kind
     || receipt.sessionId !== input.sessionId
@@ -400,25 +449,30 @@ function validateRestoreInput(input: RestoreCurrentRoleArtifactsInput): void {
   }
 }
 
-function assertPacketIdentity(
+async function assertPacketIdentity(
   input: RestoreCurrentRoleArtifactsInput,
   packet: RolePacket,
-): void {
+): Promise<void> {
   const manifest = input.frozen.manifest
   const laneId = 'lane_id' in input.role ? input.role.lane_id : null
   const anchor = packet.anchors
+  const packetRevision = await readRevisionAtPath(
+    manifest.authority_paths.lab_dir,
+    anchor.source_revision,
+    input.frozen,
+  )
   if (packet.header.lab_id !== manifest.lab_id
     || packet.header.lane_id !== laneId
     || packet.header.role_id !== input.role.role_id
     || packet.header.role_kind !== input.role.role_kind
     || packet.header.session_id !== input.sessionId
     || packet.header.issued_at < input.binding.receipt.issuedAt
-    || anchor.source_revision !== input.frozen.ref.revision
-    || anchor.dialogue_head_sha256 !== input.frozen.ref.dialogueHeadHash
-    || anchor.lab_spec_sha256 !== input.frozen.ref.specHash
-    || anchor.lab_yaml_sha256 !== input.frozen.ref.configHash
-    || anchor.resolved_manifest_sha256 !== input.frozen.ref.manifestHash
-    || anchor.campaign_contract_sha256 !== manifest.campaign_contract_sha256
+    || anchor.source_revision > input.frozen.ref.revision
+    || anchor.dialogue_head_sha256 !== packetRevision.ref.dialogueHeadHash
+    || anchor.lab_spec_sha256 !== packetRevision.ref.specHash
+    || anchor.lab_yaml_sha256 !== packetRevision.ref.configHash
+    || anchor.resolved_manifest_sha256 !== packetRevision.ref.manifestHash
+    || anchor.campaign_contract_sha256 !== packetRevision.manifest.campaign_contract_sha256
     || anchor.role_binding_receipt_sha256 !== input.binding.hash
     || anchor.runtime_revision < input.binding.receipt.runtimeRevision
     || anchor.runtime_revision > input.runtimeRevision) {

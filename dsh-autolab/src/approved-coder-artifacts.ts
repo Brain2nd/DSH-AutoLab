@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import { isAbsolute, join, relative, sep } from 'node:path'
 
-import { durableWriteFile, type FrozenRevision } from './artifacts.js'
+import { durableWriteFile, isCommittedManifestHash, readRevisionAtPath, type FrozenRevision } from './artifacts.js'
 import { readRoleBinding, type StoredRoleBinding } from './binding.js'
 import { coderImplementationReportOutputSchema } from './coder-receipt.js'
 import { currentFactAnchor } from './fact-registry.js'
@@ -379,7 +379,7 @@ async function resolveCoder(input: FreezeApprovedCoderArtifactsInput): Promise<{
     || canonicalJson(stored.receipt) !== canonicalJson(receipt)
     || receipt.receiptHash !== input.coderBinding.hash
     || receipt.labId !== manifest.lab_id
-    || receipt.manifestHash !== input.frozen.ref.manifestHash
+    || !(await isCommittedManifestHash(input.frozen.manifest.authority_paths.lab_dir, receipt.manifestHash))
     || receipt.roleId !== currentRole.role_id
     || receipt.roleKind !== 'coder'
     || receipt.sessionId !== input.coderSessionId
@@ -448,17 +448,22 @@ async function assertSourceMethodPacket(
     sha256(packet.header.assignment_id),
     `${sha256(methodRoleId)}.json`,
   )
+  const packetRevision = await readRevisionAtPath(
+    manifest.authority_paths.lab_dir,
+    packet.anchors.source_revision,
+    input.frozen,
+  )
   if (input.sourceMethodPacket.path !== expectedPath
     || packet.header.lab_id !== manifest.lab_id
     || packet.header.lane_id !== laneId
     || packet.header.role_id !== methodRoleId
     || packet.header.role_kind !== 'method'
-    || packet.anchors.source_revision !== input.frozen.ref.revision
-    || packet.anchors.dialogue_head_sha256 !== input.frozen.ref.dialogueHeadHash
-    || packet.anchors.lab_spec_sha256 !== input.frozen.ref.specHash
-    || packet.anchors.lab_yaml_sha256 !== input.frozen.ref.configHash
-    || packet.anchors.resolved_manifest_sha256 !== input.frozen.ref.manifestHash
-    || packet.anchors.campaign_contract_sha256 !== manifest.campaign_contract_sha256
+    || packet.anchors.source_revision > input.frozen.ref.revision
+    || packet.anchors.dialogue_head_sha256 !== packetRevision.ref.dialogueHeadHash
+    || packet.anchors.lab_spec_sha256 !== packetRevision.ref.specHash
+    || packet.anchors.lab_yaml_sha256 !== packetRevision.ref.configHash
+    || packet.anchors.resolved_manifest_sha256 !== packetRevision.ref.manifestHash
+    || packet.anchors.campaign_contract_sha256 !== packetRevision.manifest.campaign_contract_sha256
     || packet.output_contract.expected_hash_binding !== METHOD_TICKET_HASH_BINDING
     || canonicalJson(packet.output_contract.schema)
       !== canonicalJson(methodDesignTicketOutputSchema())) {
@@ -471,7 +476,7 @@ async function assertSourceMethodPacket(
   let recompiled: CompiledRolePacket
   try {
     recompiled = compileRolePacket({
-      manifest,
+      manifest: packetRevision.manifest,
       role_id: packet.header.role_id,
       session_id: packet.header.session_id,
       assignment_id: packet.header.assignment_id,
@@ -507,9 +512,9 @@ async function assertSourceMethodPacket(
   }
 
   const universal = packet.verbatim_blocks.universal.filter(block => (
-    block.source_path === manifest.authority_paths.lab_spec
-    && block.exact_text === input.frozen.spec
-    && block.text_sha256 === input.frozen.ref.specHash
+    block.source_path === packetRevision.manifest.authority_paths.lab_spec
+    && block.text_sha256 === packet.anchors.lab_spec_sha256
+    && sha256(block.exact_text) === packet.anchors.lab_spec_sha256
   ))
   const assignment = packet.verbatim_blocks.assignment.filter(block => (
     block.text_sha256 === packet.anchors.assignment_contract_sha256
@@ -700,7 +705,7 @@ async function assertApprovedReviewChain(
     || judgeBinding.path !== judge.binding_path
     || judgeBinding.hash !== judge.binding_sha256
     || judgeBinding.receipt.labId !== manifest.lab_id
-    || judgeBinding.receipt.manifestHash !== input.frozen.ref.manifestHash
+    || !(await isCommittedManifestHash(input.frozen.manifest.authority_paths.lab_dir, judgeBinding.receipt.manifestHash))
     || judgeBinding.receipt.roleId !== preflightJudgeRoleId
     || judgeBinding.receipt.roleKind !== 'preflight_judge'
     || judgeBinding.receipt.sessionId !== judge.session_id

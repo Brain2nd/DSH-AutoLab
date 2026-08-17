@@ -4,6 +4,7 @@ import {
   link,
   open,
   readFile,
+  readdir,
   rename,
   rm,
   stat,
@@ -261,6 +262,35 @@ export class ArtifactStore {
     return await this.readCurrent(labId)
   }
 
+  /** Read one committed revision by number (historical or current). */
+  async readRevisionAt(labId: string, revision: number): Promise<FrozenRevision> {
+    return await readRevisionAtPath(this.labDirectory(labId), revision)
+  }
+
+  /** Freeze one Controller-authored configuration revision from exact texts. */
+  async freezeConfigRevision(input: {
+    labId: string
+    revision: number
+    spec: string
+    config: string
+    manifest: ResolvedManifest
+    dialogueHeadHash: string
+  }): Promise<FrozenRevision> {
+    if (input.spec.trim().length === 0 || input.config.trim().length === 0) {
+      throw new ArtifactError('LAB_SPEC.md and lab.yaml must not be empty', 'INVALID_SOURCE')
+    }
+    return await this.freezeRevision({
+      labId: input.labId,
+      revision: input.revision,
+      specBytes: new TextEncoder().encode(input.spec),
+      configBytes: new TextEncoder().encode(input.config),
+      spec: input.spec,
+      config: input.config,
+      manifest: input.manifest,
+      dialogueHeadHash: input.dialogueHeadHash,
+    })
+  }
+
   private async freezeRevision(input: {
     labId: string
     revision: number
@@ -400,11 +430,82 @@ export async function durableWriteFile(
   }
 }
 
+/**
+ * Read one committed revision by number directly from the lab directory. Used
+ * by packet-verify paths so that a packet compiled under an older revision is
+ * verified against its own revision's texts after CURRENT advances.
+ */
+/** All committed revision manifestHashes (any revision number on disk). */
+export async function listCommittedManifestHashes(
+  labDirectory: string,
+): Promise<ReadonlySet<string>> {
+  const revisions = resolve(labDirectory, 'revisions')
+  const names = await readdir(revisions).catch(() => [] as string[])
+  const hashes = new Set<string>()
+  for (const name of names) {
+    if (!/^\d{6}$/u.test(name)) continue
+    const metadataBytes = await readFile(join(revisions, name, 'REVISION.json')).catch(() => undefined)
+    if (metadataBytes === undefined) continue
+    try {
+      const metadata = JSON.parse(decodeText(metadataBytes, 'REVISION.json'))
+      if (isRevisionMetadata(metadata)) hashes.add(metadata.manifestHash)
+    } catch {
+      continue
+    }
+  }
+  return hashes
+}
+
+/** True when the hash matches the manifestHash of any committed revision <= current. */
+export async function isCommittedManifestHash(
+  labDirectory: string,
+  manifestHash: string,
+): Promise<boolean> {
+  return (await listCommittedManifestHashes(labDirectory)).has(manifestHash)
+}
+
+export async function readRevisionAtPath(
+  labDirectory: string,
+  revision: number,
+  current?: FrozenRevision,
+): Promise<FrozenRevision> {
+  if (current !== undefined && current.ref.revision === revision) return current
+  const revisionDirectory = resolve(
+    labDirectory,
+    'revisions',
+    String(revision).padStart(6, '0'),
+  )
+  const metadataBytes = await readFile(join(revisionDirectory, 'REVISION.json')).catch(() => undefined)
+  if (metadataBytes === undefined) {
+    throw new ArtifactError(`Revision ${revision} does not exist`, 'REVISION_MISSING')
+  }
+  let metadata: unknown
+  try {
+    metadata = JSON.parse(decodeText(metadataBytes, 'REVISION.json'))
+  } catch {
+    throw new ArtifactError('REVISION.json is malformed', 'INVALID_CURRENT')
+  }
+  if (!isRevisionMetadata(metadata) || metadata.revision !== revision) {
+    throw new ArtifactError(
+      'REVISION.json does not match the requested revision',
+      'INVALID_CURRENT',
+    )
+  }
+  return await readFrozenRevision(labDirectory, {
+    version: 2,
+    revision,
+    revisionPath: join('revisions', String(revision).padStart(6, '0')),
+    specHash: metadata.specHash,
+    configHash: metadata.configHash,
+    manifestHash: metadata.manifestHash,
+    dialogueHeadHash: metadata.dialogueHeadHash,
+  })
+}
+
 async function readFrozenRevision(
   labDirectory: string,
   pointer: CurrentPointer,
-): Promise<FrozenRevision> {
-  const revisionName = String(pointer.revision).padStart(6, '0')
+): Promise<FrozenRevision> {  const revisionName = String(pointer.revision).padStart(6, '0')
   const expectedPath = join('revisions', revisionName)
   if (pointer.revisionPath !== expectedPath) {
     throw new ArtifactError('CURRENT revision path does not match its revision', 'INVALID_CURRENT')

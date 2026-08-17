@@ -32,6 +32,9 @@ function mount(service: object): readonly ToolDefinition[] {
         definitions.push(definition)
         return () => undefined
       },
+      get(name: string) {
+        return definitions.find(definition => definition.name === name)
+      },
     },
     autolab: service,
   } as Context
@@ -146,6 +149,32 @@ describe('AutoLab role submission tools', () => {
         expect(Object.hasOwn(parameters.properties, forbidden)).toBe(false)
       }
     }
+  })
+
+  it('installs idempotently: a second apply on the same context registers nothing', () => {
+    const definitions: ToolDefinition[] = []
+    const ctx = {
+      tools: {
+        register(definition: ToolDefinition) {
+          definitions.push(definition)
+          return () => undefined
+        },
+        get(name: string) {
+          return definitions.find(definition => definition.name === name)
+        },
+      },
+      autolab: {},
+    } as Context
+    apply(ctx)
+    apply(ctx)
+    expect(definitions).toHaveLength(5)
+    expect(definitions.map(definition => definition.name)).toEqual([
+      'SubmitMethodForPreflightReview',
+      'SubmitPreflightVerdict',
+      'SubmitCoderImplementation',
+      'SubmitPostflightResult',
+      'SubmitAutoLabRoleResult',
+    ])
   })
 
   it('passes only the exact Method caller and signal to the Controller', async () => {

@@ -507,7 +507,7 @@ export const runtimeStateSchema = z.object({
       })
     }
     if (state.config !== undefined
-      && review.capability.configRevision !== state.config.revision) {
+      && review.capability.configRevision > state.config.revision) {
       context.addIssue({
         code: 'custom',
         message: `review ${reviewId} config revision does not match RuntimeState`,
@@ -542,7 +542,7 @@ export const runtimeStateSchema = z.object({
         path: ['candidates', laneId],
       })
     }
-    if (state.config !== undefined && candidate.sourceRevision !== state.config.revision) {
+    if (state.config !== undefined && candidate.sourceRevision > state.config.revision) {
       context.addIssue({
         code: 'custom',
         message: `candidate ${candidate.candidateId} config revision does not match RuntimeState`,
@@ -588,7 +588,7 @@ export const runtimeStateSchema = z.object({
         })
       }
     }
-    if (state.config !== undefined && candidate.sourceRevision !== state.config.revision) {
+    if (state.config !== undefined && candidate.sourceRevision > state.config.revision) {
       context.addIssue({
         code: 'custom',
         message: `retired candidate ${candidate.candidateId} config revision does not match RuntimeState`,
@@ -620,7 +620,7 @@ export const runtimeStateSchema = z.object({
         path: ['trials', trialId],
       })
     }
-    if (state.config !== undefined && trial.sourceRevision !== state.config.revision) {
+    if (state.config !== undefined && trial.sourceRevision > state.config.revision) {
       context.addIssue({
         code: 'custom',
         message: `Trial ${trialId} config revision does not match RuntimeState`,

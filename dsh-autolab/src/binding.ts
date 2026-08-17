@@ -3,7 +3,7 @@ import { isAbsolute, join } from 'node:path'
 
 import { z } from 'zod'
 
-import { durableWriteFile } from './artifacts.js'
+import { durableWriteFile, listCommittedManifestHashes } from './artifacts.js'
 import { canonicalJson, sha256 } from './integrity.js'
 import type { RootRoleKind } from './roles.js'
 
@@ -73,7 +73,10 @@ export async function freezeRoleBinding(input: {
   }
   const path = roleBindingPath(input.labDirectory, input.roleId)
   const existing = await readBinding(path)
-  if (existing !== undefined) return assertSameBinding(existing, path, input)
+  const committedManifestHashes = await listCommittedManifestHashes(input.labDirectory)
+  if (existing !== undefined) {
+    return assertSameBinding(existing, path, input, committedManifestHashes)
+  }
 
   const withoutHash = {
     version: 1 as const,
@@ -103,7 +106,7 @@ export async function freezeRoleBinding(input: {
   if (committed === undefined) {
     throw new RoleBindingError('Role binding was not committed', 'BINDING_CORRUPT')
   }
-  return assertSameBinding(committed, path, input)
+  return assertSameBinding(committed, path, input, committedManifestHashes)
 }
 
 export async function readRoleBinding(
@@ -156,10 +159,16 @@ function assertSameBinding(
     model: string
     cwd: string
   },
+  committedManifestHashes: ReadonlySet<string>,
 ): StoredRoleBinding {
   const receipt = stored.receipt
+  // A binding frozen under an earlier committed revision keeps authorizing the
+  // byte-identical role-to-Session identity after CURRENT advances; an
+  // uncommitted manifest hash remains a conflict.
+  const manifestHashAuthorized = receipt.manifestHash === input.manifestHash
+    || committedManifestHashes.has(receipt.manifestHash)
   if (receipt.labId !== input.labId
-    || receipt.manifestHash !== input.manifestHash
+    || !manifestHashAuthorized
     || receipt.roleId !== input.roleId
     || receipt.roleKind !== input.roleKind
     || receipt.sessionId !== input.sessionId

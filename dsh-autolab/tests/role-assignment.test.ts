@@ -9,7 +9,7 @@ import { ArtifactStore, sha256, type FrozenRevision } from '../src/artifacts.js'
 import { freezeRoleBinding, type StoredRoleBinding } from '../src/binding.js'
 import { EMPTY_FACT_SET } from '../src/fact-registry.js'
 import { canonicalJson, type ResolvedManifest } from '../src/manifest.js'
-import { compileRolePacket, type CompiledRolePacket } from '../src/packet.js'
+import { compileRolePacket, parseRolePacket, type CompiledRolePacket } from '../src/packet.js'
 import {
   assertMethodAssignmentReplay,
   assertRoleAssignmentMayDispatch,
@@ -585,5 +585,62 @@ describe('Controller-selected generic Role Assignment', () => {
         code: 'UNSUPPORTED_ROLE',
       }))
     }
+  })
+
+  it('supersedes an incumbent Packet corrupted by a stale LAB_SPEC block, and still fails loud for other corruption', async () => {
+    const value = await fixture('ops')
+    const originalBytes = await readFile(value.current.packetPath, 'utf8')
+    const original = parseRolePacket(JSON.parse(originalBytes))
+
+    // Known plugin-bug corruption: the universal block carries an internally
+    // consistent but STALE spec (older revision text + its own hash).
+    const staleText = '# Stale older-revision contract\n'
+    const corrupted = structuredClone(original)
+    corrupted.verbatim_blocks.universal[0] = {
+      ...corrupted.verbatim_blocks.universal[0]!,
+      source_path: join(value.root, 'revisions', '000000', 'LAB_SPEC.md'),
+      exact_text: staleText,
+      text_sha256: sha256(staleText),
+    }
+    const corruptedText = canonicalJson(corrupted)
+    await writeFile(value.current.packetPath, corruptedText, 'utf8')
+
+    const request = {
+      frozen: value.frozen,
+      role: value.role,
+      sessionId: value.binding.receipt.sessionId,
+      binding: value.binding,
+      currentPacket: { path: value.current.packetPath, hash: sha256(corruptedText) },
+      assignmentId: 'ops:supersede-corrupt-packet',
+      objective: 'Supersede the corrupt incumbent Packet.',
+      content: null,
+      outputSchema: null,
+      inputArtifactRefs: [],
+      runtimeRevision: 9,
+      issuedAt: 1_786_742_400_200,
+    }
+    const assigned = await freezeRoleAssignment(request)
+    expect(assigned.packet.packet.verbatim_blocks.universal[0]!.text_sha256)
+      .toBe(value.frozen.ref.specHash)
+    expect(assigned.packet.packet.verbatim_blocks.universal[0]!.source_path)
+      .toBe(value.frozen.manifest.authority_paths.lab_spec)
+    expect(assigned.packet.packet.runtime_snapshot.incumbent).toBeUndefined()
+    expect(assigned.packet.packet.runtime_snapshot.evidence_refs).toEqual([])
+
+    // A different corruption (tampered Assignment block) must still fail.
+    const tampered = parseRolePacket(JSON.parse(originalBytes))
+    tampered.verbatim_blocks.assignment[0] = {
+      ...tampered.verbatim_blocks.assignment[0]!,
+      text_sha256: 'b'.repeat(64),
+    }
+    const tamperedText = canonicalJson(tampered)
+    await writeFile(value.current.packetPath, tamperedText, 'utf8')
+    await expect(freezeRoleAssignment({
+      ...request,
+      assignmentId: 'ops:supersede-corrupt-packet-reject',
+      currentPacket: { path: value.current.packetPath, hash: sha256(tamperedText) },
+    })).rejects.toThrowError(expect.objectContaining<Partial<RoleAssignmentError>>({
+      code: 'ARTIFACT_CONFLICT',
+    }))
   })
 })

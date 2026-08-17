@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import { isAbsolute, join } from 'node:path'
 
-import { durableWriteFile, type FrozenRevision } from './artifacts.js'
+import { durableWriteFile, isCommittedManifestHash, readRevisionAtPath, type FrozenRevision } from './artifacts.js'
 import { readRoleBinding, type StoredRoleBinding } from './binding.js'
 import { currentFactAnchor } from './fact-registry.js'
 import { canonicalJson, sha256 } from './integrity.js'
@@ -89,7 +89,7 @@ export async function freezePreflightReviewArtifacts(
 
   const judge = await resolveJudge(input)
   const sourcePacket = await readSourceMethodPacket(input.sourceMethodPacket)
-  assertSourceMethodPacket(
+  await assertSourceMethodPacket(
     sourcePacket,
     input.sourceMethodAssignment,
     input.frozen,
@@ -323,7 +323,7 @@ async function resolveJudge(input: FreezePreflightReviewArtifactsInput): Promise
     || canonicalJson(stored.receipt) !== canonicalJson(receipt)
     || receipt.receiptHash !== input.judgeBinding.hash
     || receipt.labId !== input.frozen.manifest.lab_id
-    || receipt.manifestHash !== input.frozen.ref.manifestHash
+    || !(await isCommittedManifestHash(input.frozen.manifest.authority_paths.lab_dir, receipt.manifestHash))
     || receipt.roleKind !== 'preflight_judge'
     || receipt.sessionId !== input.judgeSessionId) {
     throw new PreflightReviewArtifactError(
@@ -393,22 +393,27 @@ async function readSourceMethodPacket(reference: FrozenArtifactReference): Promi
   return packet
 }
 
-function assertSourceMethodPacket(
+async function assertSourceMethodPacket(
   packet: RolePacket,
   sourceAssignment: FrozenArtifactReference,
   frozen: FrozenRevision,
   laneId: string,
   methodRoleId: string,
-): void {
+): Promise<void> {
+  const packetRevision = await readRevisionAtPath(
+    frozen.manifest.authority_paths.lab_dir,
+    packet.anchors.source_revision,
+    frozen,
+  )
   if (packet.header.lab_id !== frozen.manifest.lab_id
     || packet.header.lane_id !== laneId
     || packet.header.role_id !== methodRoleId
     || packet.header.role_kind !== 'method'
-    || packet.anchors.source_revision !== frozen.ref.revision
-    || packet.anchors.dialogue_head_sha256 !== frozen.ref.dialogueHeadHash
-    || packet.anchors.lab_spec_sha256 !== frozen.ref.specHash
-    || packet.anchors.lab_yaml_sha256 !== frozen.ref.configHash
-    || packet.anchors.resolved_manifest_sha256 !== frozen.ref.manifestHash
+    || packet.anchors.source_revision > frozen.ref.revision
+    || packet.anchors.dialogue_head_sha256 !== packetRevision.ref.dialogueHeadHash
+    || packet.anchors.lab_spec_sha256 !== packetRevision.ref.specHash
+    || packet.anchors.lab_yaml_sha256 !== packetRevision.ref.configHash
+    || packet.anchors.resolved_manifest_sha256 !== packetRevision.ref.manifestHash
     || packet.anchors.assignment_contract_sha256 !== sourceAssignment.sha256) {
     throw new PreflightReviewArtifactError(
       'source Method Packet does not bind this CURRENT Lane and Assignment',

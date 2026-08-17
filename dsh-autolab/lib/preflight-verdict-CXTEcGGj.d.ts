@@ -1787,10 +1787,31 @@ declare class ArtifactStore {
   readCurrent(labId: string): Promise<FrozenRevision>;
   /** Return no revision only when CURRENT is genuinely absent. */
   readCurrentIfPresent(labId: string): Promise<FrozenRevision | undefined>;
+  /** Read one committed revision by number (historical or current). */
+  readRevisionAt(labId: string, revision: number): Promise<FrozenRevision>;
+  /** Freeze one Controller-authored configuration revision from exact texts. */
+  freezeConfigRevision(input: {
+    labId: string;
+    revision: number;
+    spec: string;
+    config: string;
+    manifest: ResolvedManifest;
+    dialogueHeadHash: string;
+  }): Promise<FrozenRevision>;
   private freezeRevision;
 }
 declare function generateLabId(now?: Date): string;
 declare function durableWriteFile(path: string, value: Uint8Array | string, replace: boolean): Promise<void>;
+/**
+ * Read one committed revision by number directly from the lab directory. Used
+ * by packet-verify paths so that a packet compiled under an older revision is
+ * verified against its own revision's texts after CURRENT advances.
+ */
+/** All committed revision manifestHashes (any revision number on disk). */
+declare function listCommittedManifestHashes(labDirectory: string): Promise<ReadonlySet<string>>;
+/** True when the hash matches the manifestHash of any committed revision <= current. */
+declare function isCommittedManifestHash(labDirectory: string, manifestHash: string): Promise<boolean>;
+declare function readRevisionAtPath(labDirectory: string, revision: number, current?: FrozenRevision): Promise<FrozenRevision>;
 //#endregion
 //#region src/packet.d.ts
 declare const verbatimBlockSchema: z.ZodObject<{
@@ -2238,8 +2259,8 @@ declare const rolePacketSchema: z.ZodObject<{
     lane_id: z.ZodNullable<z.ZodString>;
     role_id: z.ZodString;
     role_kind: z.ZodEnum<{
-      coder: "coder";
       method: "method";
+      coder: "coder";
       preflight_judge: "preflight_judge";
       postflight_judge: "postflight_judge";
       ops: "ops";
@@ -2508,4 +2529,4 @@ declare function freezePreflightVerdict(input: FreezePreflightVerdictInput): Pro
 declare const freezePreflightVerdictArtifact: typeof freezePreflightVerdict;
 declare const parsePreflightVerdictArtifact: typeof parsePreflightVerdict;
 //#endregion
-export { activeCandidateSchema as $, ResolvedManifest as A, ActiveTrial as B, DraftSnapshot as C, transitionRuntimeState as Ct, durableWriteFile as D, RevisionValidation as E, roleBindingSchema as F, LAB_ID_PATTERN as G, CONTROL_PAYLOAD_HASH_PATTERN as H, canonicalJson as I, ReviewResolutionError as J, LabLifecycle as K, sha256 as L, hashResolvedManifest as M, parseResolvedManifest as N, generateLabId as O, resolvedManifestSchema as P, SHA256_PATTERN as Q, ActiveCandidate as R, ArtifactStore as S, runtimeStateSchema as St, LabScaffold as T, ConfigRef as U, AutoLabStateError as V, ControllerGoalState as W, RoleState as X, ReviewResolutionState as Y, RuntimeState as Z, hashRolePacket as _, reviewResultStateSchema as _t, PreflightVerdict as a, controllerGoalSchema as at, verbatimBlockSchema as b, rolePhaseSchema as bt, freezePreflightVerdictArtifact as c, labLifecycleSchema as ct, CompileRolePacketInput as d, resolutionHash as dt, activeReviewSchema as et, CompiledRolePacket as f, reviewCapabilityStateSchema as ft, compileRolePacket as g, reviewResolutionStateSchema as gt, VerbatimBlock as h, reviewReadyToAdvance as ht, PreflightTopLevelVerdict as i, configRefSchema as it, RoleBinding as j, ManifestValidationError as k, parsePreflightVerdict as l, parseState as lt, RolePacket as m, reviewPauseStateSchema as mt, FrozenPreflightVerdict as n, adoptRuntimeOwner as nt, PreflightVerdictError as o, createRuntimeState as ot, PacketValidationError as p, reviewFreezeComplete as pt, ReviewResolutionBody as q, PreflightBlockingFinding as r, autolabDomainSpec as rt, freezePreflightVerdict as s, goalInstallSchema as st, FreezePreflightVerdictInput as t, activeTrialSchema as tt, parsePreflightVerdictArtifact as u, recordReviewResolution as ut, parseRolePacket as v, reviewVerdictStateSchema as vt, FrozenRevision as w, validateLabId as wt, ArtifactError as x, roleStateSchema as xt, rolePacketSchema as y, roleActivationBlockerSchema as yt, ActiveReview as z };
+export { RoleState as $, listCommittedManifestHashes as A, sha256 as B, DraftSnapshot as C, rolePhaseSchema as Ct, durableWriteFile as D, validateLabId as Dt, RevisionValidation as E, transitionRuntimeState as Et, hashResolvedManifest as F, CONTROL_PAYLOAD_HASH_PATTERN as G, ActiveReview as H, parseResolvedManifest as I, LAB_ID_PATTERN as J, ConfigRef as K, resolvedManifestSchema as L, ManifestValidationError as M, ResolvedManifest as N, generateLabId as O, RoleBinding as P, ReviewResolutionState as Q, roleBindingSchema as R, ArtifactStore as S, roleActivationBlockerSchema as St, LabScaffold as T, runtimeStateSchema as Tt, ActiveTrial as U, ActiveCandidate as V, AutoLabStateError as W, ReviewResolutionBody as X, LabLifecycle as Y, ReviewResolutionError as Z, hashRolePacket as _, reviewPauseStateSchema as _t, PreflightVerdict as a, adoptRuntimeOwner as at, verbatimBlockSchema as b, reviewResultStateSchema as bt, freezePreflightVerdictArtifact as c, controllerGoalSchema as ct, CompileRolePacketInput as d, labLifecycleSchema as dt, RuntimeState as et, CompiledRolePacket as f, parseState as ft, compileRolePacket as g, reviewFreezeComplete as gt, VerbatimBlock as h, reviewCapabilityStateSchema as ht, PreflightTopLevelVerdict as i, activeTrialSchema as it, readRevisionAtPath as j, isCommittedManifestHash as k, parsePreflightVerdict as l, createRuntimeState as lt, RolePacket as m, resolutionHash as mt, FrozenPreflightVerdict as n, activeCandidateSchema as nt, PreflightVerdictError as o, autolabDomainSpec as ot, PacketValidationError as p, recordReviewResolution as pt, ControllerGoalState as q, PreflightBlockingFinding as r, activeReviewSchema as rt, freezePreflightVerdict as s, configRefSchema as st, FreezePreflightVerdictInput as t, SHA256_PATTERN as tt, parsePreflightVerdictArtifact as u, goalInstallSchema as ut, parseRolePacket as v, reviewReadyToAdvance as vt, FrozenRevision as w, roleStateSchema as wt, ArtifactError as x, reviewVerdictStateSchema as xt, rolePacketSchema as y, reviewResolutionStateSchema as yt, canonicalJson as z };

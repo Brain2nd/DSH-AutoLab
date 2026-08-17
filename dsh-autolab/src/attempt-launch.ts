@@ -161,7 +161,10 @@ export async function prepareInitialLocalAttempt(
   }))
   const projection: ActiveTrial = {
     version: 1,
-    sourceRevision: input.frozen.ref.revision,
+    // The Trial descends from the exact frozen candidate capture, so it
+    // carries the CANDIDATE's source revision (an earlier committed revision
+    // remains valid after CURRENT advances).
+    sourceRevision: input.candidate.sourceRevision,
     laneId: input.laneId,
     candidateId: input.candidate.candidateId,
     candidateSha: input.candidate.candidateSha,
@@ -239,7 +242,7 @@ export async function verifyRetryLocalAttemptReplay(
   const slot = trial.runSlots[input.runSlotId]
   const active = slot?.activeAttempt
   const lane = input.frozen.manifest.lanes.find(candidate => candidate.lane_id === trial.laneId)
-  if (trial.sourceRevision !== input.frozen.ref.revision
+  if (trial.sourceRevision > input.frozen.ref.revision
     || lane === undefined
     || slot === undefined
     || (slot.state.status !== 'attempt_active' && slot.state.status !== 'outcome_unknown')
@@ -282,7 +285,10 @@ export async function verifyRetryLocalAttemptReplay(
 function assertIdentity(input: PrepareInitialLocalAttemptInput): void {
   const lane = input.frozen.manifest.lanes.find(candidate => candidate.lane_id === input.laneId)
   if (input.candidate.laneId !== input.laneId
-    || input.candidate.sourceRevision !== input.frozen.ref.revision
+    // A candidate frozen under an earlier committed revision remains valid
+    // work for a Trial launched after CURRENT advanced (same <= policy as
+    // state/packet/review verification).
+    || input.candidate.sourceRevision > input.frozen.ref.revision
     || lane === undefined
     || lane.coder_role_id !== input.candidate.coderRoleId) {
     throw new AttemptLaunchError(
@@ -305,7 +311,7 @@ function assertRetryProjection(
 ): ActiveTrial['runSlots'][string] {
   const slot = trial.runSlots[input.runSlotId]
   const lane = input.frozen.manifest.lanes.find(candidate => candidate.lane_id === trial.laneId)
-  if (trial.sourceRevision !== input.frozen.ref.revision
+  if (trial.sourceRevision > input.frozen.ref.revision
     || lane === undefined
     || slot === undefined
     || slot.state.status !== 'retryable'
